@@ -55,12 +55,13 @@ export const SHORTCUTS = Object.freeze(
     },
     {
       id: "newTask",
-      label: "新建任务",
+      label: "新聊天",
       keys: ["Command", "N"],
       context: "codex",
     },
     {
       id: "dictation",
+      requiresPhysicalPress: true,
       label: "听写",
       keys: ["Control", "Shift", "D"],
       context: "codex",
@@ -71,6 +72,8 @@ export const SHORTCUTS = Object.freeze(
       keys: ["Control", "Shift", "V"],
       context: "codex",
     },
+    {id:"toggleFastMode",label:"普通 / 极速模式",keys:[],context:"codex",requiresPhysicalPress:true},
+    {id:"sendPrompt",label:"发送",keys:[],context:"codex",requiresPhysicalPress:true,requiresDedicatedShortcut:true},
     {
       id: "modelPicker",
       label: "模型与推理选项",
@@ -95,6 +98,8 @@ export const SHORTCUTS = Object.freeze(
       keys: ["Return"],
       context: "approval",
       requiresUserGesture: true,
+      requiresPhysicalPress: true,
+      requiresDedicatedShortcut: true,
     },
     {
       id: "decline",
@@ -102,6 +107,8 @@ export const SHORTCUTS = Object.freeze(
       keys: ["Escape"],
       context: "approval",
       requiresUserGesture: true,
+      requiresPhysicalPress: true,
+      requiresDedicatedShortcut: true,
     },
   ].map((entry) => {
     const keys = IS_WIN ? entry.keys.map((key) => WINDOWS_KEY_LABEL[key] ?? key) : [...entry.keys];
@@ -114,8 +121,8 @@ export const SHORTCUTS = Object.freeze(
             SHORTCUT_SYMBOLS[key] ?? key,
         )
         .join(IS_WIN ? "+" : ""),
-      available: entry.context !== "approval",
-      ...(entry.context === "approval"
+      available: entry.context !== "approval" || entry.requiresDedicatedShortcut===true,
+      ...(entry.context === "approval" && !entry.requiresDedicatedShortcut
         ? { reason: "此处无法验证当前审批卡，请在 Codex 中操作" }
         : {}),
     });

@@ -110,7 +110,7 @@ test('a focus-transition duplicate cannot open and immediately close a toggle',(
 
 test('platform default accelerators parse into canonical wire modifiers',()=>{
  const windows=process.platform==='win32';
- for(const shortcut of SHORTCUTS){
+ for(const shortcut of SHORTCUTS.filter(s=>s.keys.length)){
   const parsed=parseMacShortcut(shortcut.keys.join('+'));
   assert.ok(parsed,`${shortcut.id} default accelerator must parse`);
   assert.ok(Number.isInteger(parsed.keyCode),shortcut.id);

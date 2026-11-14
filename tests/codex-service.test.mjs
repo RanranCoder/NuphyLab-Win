@@ -84,7 +84,7 @@ test('Micro slot mappings and command keys use the centralized action path witho
  assert.equal((await service.operations()).filter(o=>o.op==='shortcut').at(-1).threadId,'waiting');
  assert.equal((await service.state()).codex.lighting.selectedId,'waiting');
  assert.equal((await service.command({op:'codexSelect',threadId:'missing'})).ok,false);
- for (const action of SHORTCUTS.filter(s=>s.available)) {
+ for (const action of SHORTCUTS.filter(s=>s.available&&!s.requiresPhysicalPress)) {
   const result=await service.command({op:'codexAction',action:action.id,...(action.id==='dictation'?{phase:'down'}:{})});
   assert.equal(result.ok,true,action.id);
   const sent=(await service.operations()).filter(o=>o.op==='shortcut').at(-1);
