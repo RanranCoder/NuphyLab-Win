@@ -1,7 +1,9 @@
 // Layout measured by ShallowRed/nuphy-leds (MIT); see THIRD_PARTY_NOTICES.md.
-import { createPresets } from "./presets.mjs";
+import { createPresets, heartColors } from "./presets.mjs";
 import raw from "./air75-v3-ansi.json" with { type: "json" };
-import heartKeys from "./heart-keys.json" with { type: "json" };
+import kickRaw from "./kick75-ansi.json" with { type: "json" };
+import additional from './additional-keyboards.json' with {type:'json'};
+import {getKeyboardProfile,isKeyboardModel} from './keyboard-models.mjs';
 export const LED_COUNT = 84;
 const names = {
   esc: "Escape",
@@ -33,7 +35,7 @@ const names = {
   "→": "ArrowRight",
   fn: "Fn",
 };
-export const layout = raw.rows.flatMap((row, y) => {
+export const airLayout = raw.rows.flatMap((row, y) => {
   let x = 0;
   return row.map((k) => {
     const p = {
@@ -86,7 +88,33 @@ export const layout = raw.rows.flatMap((row, y) => {
     return p;
   });
 });
-export const blank = () => Array(LED_COUNT).fill("#000000");
+// Kick uses the official physical coordinates and its own contiguous RGB order.
+// The dial's three input functions have no per-key RGB indices.
+export const kickLayout = kickRaw.rows.flatMap((row) => row.map((key) => ({
+  index: key.i,
+  code: key.c,
+  label: key.l,
+  x: key.x,
+  y: key.y,
+  w: key.w ?? 1,
+  h: 1,
+})));
+let layoutModel = "air75-v3";
+export let layout = airLayout;
+export function getLayoutModel() { return layoutModel; }
+export function setLayoutModel(modelId) {
+  const normalized = ["air75v3", "air75-v3-ansi"].includes(modelId) ? "air75-v3" : modelId;
+  if (!isKeyboardModel(normalized))
+    throw new Error(`Unsupported keyboard model: ${modelId}`);
+  layoutModel = normalized;
+  layout = getLayoutForModel(normalized);
+  return layout;
+}
+export function getLayoutForModel(modelId='air75-v3') {
+  getKeyboardProfile(modelId);
+  return modelId === 'air75-v3' ? airLayout : modelId === 'kick75' ? kickLayout : additional[modelId].layout;
+}
+export const blank = (modelId=layoutModel) => Array(getKeyboardProfile(modelId).canvasCount).fill('#000000');
 export function hsv(h, s = 0.55, v = 0.85) {
   const f = (n) => {
     const k = (n + h * 6) % 6;
@@ -97,10 +125,7 @@ export function hsv(h, s = 0.55, v = 0.85) {
   return "#" + f(5) + f(3) + f(1);
 }
 export function heart(color = "#dc847b") {
-  const c = blank();
-  for (const key of layout)
-    if (heartKeys.includes(key.code)) c[key.index] = color;
-  return c;
+  return heartColors(layout, color);
 }
 export const defaultAnimation = {
   effect: "static",

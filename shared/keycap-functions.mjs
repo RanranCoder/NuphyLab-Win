@@ -1,4 +1,4 @@
-// Air75 V3 Mac keycap order. HID usages, not macOS virtual key codes.
+// Verified AIR75 V3 / Kick75 Mac keycap order. HID usages, not macOS virtual key codes.
 // Generic Desktop / Consumer usages follow Apple's IOHIDUsageTables.h.
 export const KEYCAP_USAGES = [
   0xc00000070, 0xc0000006f, // Display brightness down / up

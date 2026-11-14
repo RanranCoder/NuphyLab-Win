@@ -91,13 +91,13 @@ export class AudioReactive {
         for(;band<7;band++){pick-=this.bands[band];if(pick<=0)break}
         this.drops.push({time:now,x:band*2+this.random()*2,strength:Math.max(0.3,this.drive)});
       }else if(config.effect==='sparkle'){
-        for(let i=0;i<1+Math.floor(this.level*3);i++)this.stars.push({time:now,index:Math.floor(this.random()*83),strength:Math.max(0.3,this.drive)});
+        for(let i=0;i<1+Math.floor(this.level*3);i++)this.stars.push({time:now,index:layout[Math.min(layout.length-1,Math.floor(this.random()*layout.length))].index,strength:Math.max(0.3,this.drive)});
       }
       this.lastSpawn=now;
     }
     const frame=blank();
     for(const key of layout) {
-      if(key.index>=83)continue;
+      if(key.controllable===false)continue;
       const x=key.x+key.w/2,y=key.y+key.h/2;
       let amount=this.drive;
       if(config.effect==='spectrum') {
