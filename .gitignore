@@ -1,0 +1,39 @@
+node_modules/
+ui/node_modules/
+ui/dist/
+bin/
+release/
+vendor/
+.DS_Store
+*.log
+*.tmp
+
+native/air75-hid-bridge
+ui/*.tsbuildinfo
+
+backups/
+
+# Local credentials, runtime data and signing material
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.key
+*.pem
+runtime.json
+library.json
+original-lighting*.json
+native/hardware-qa-results.json
+
+# Local photo reference (not required to build)
+原图/
+native-win/target/
+
+# Windows build outputs copied to the repo root by copy-native-win.mjs
+# (the source of the vendored DLL is native-win/shell/dll/, which IS tracked)
+/NuPhyLab.exe
+/WebView2Loader.dll
+
+# WebView2 user data folder created next to the exe during local runs
+/NuPhyLab.exe.WebView2/

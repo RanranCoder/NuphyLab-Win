@@ -1,0 +1,3 @@
+[workspace]
+members = ["hidbridge", "keymap", "shell"]
+resolver = "2"

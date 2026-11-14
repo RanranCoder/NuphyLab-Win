@@ -1,0 +1,4 @@
+# The GNU host toolchain bundles its own MinGW linker, so the bridge builds
+# with no Visual Studio installation and no MSVC dependency at all.
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"

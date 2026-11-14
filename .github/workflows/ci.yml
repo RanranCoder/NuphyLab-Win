@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the porting target (M0 acceptance: the suite runs green
+        # there); macOS guards the platform-gated paths against regression.
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The UI build shares no dependencies with the test suite but catches
+      # TypeScript/Vite regressions; keep it out of the test job only if it
+      # becomes slow enough to matter.
+      - name: Build UI
+        run: npm --prefix ui ci && npm --prefix ui run build
+      # The Rust HID bridge (Windows only; the Swift helper keeps building on
+      # macOS with swiftc outside CI). The cargo test suite runs the ported
+      # offline self-test: 5300+ protocol, journal and lifecycle checks.
+      - name: Build and test HID bridge (Rust)
+        if: matrix.os == 'windows-latest'
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cargo test
+        if: matrix.os == 'windows-latest'
+        working-directory: native-win
+        run: cargo test --release
+      - name: Test
+        run: npm test
