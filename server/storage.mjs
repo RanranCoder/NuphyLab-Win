@@ -8,6 +8,8 @@ import { validateStatusColors } from "../shared/codex-lighting.mjs";
 import { DEFAULT_LIGHT_TIME_MS, validLightTime } from "../shared/lighting-power.mjs";
 import {DEFAULT_SIDEBAR_FEATURES,validateSidebarFeatures} from '../shared/sidebar-features.mjs';
 import {migrateSidebarFeatures} from './sidebar-migration.mjs';
+import {DEFAULT_AMBIENT_LIGHTING,validateAmbientLighting} from '../shared/ambient-lighting.mjs';
+import { validateOutputColorProfile } from "../shared/output-color-profile.mjs";
 export function validateColors(colors) {
   if (
     !Array.isArray(colors) ||
@@ -99,6 +101,7 @@ import {DEFAULT_AUDIO,validateAudio} from "../shared/audio-reactive.mjs";
 import {DEFAULT_APPEARANCE, validateAppearance} from "../shared/appearance.mjs";
 export const defaultSettings = {
   audio: {...DEFAULT_AUDIO},
+  ambientLighting: structuredClone(DEFAULT_AMBIENT_LIGHTING),
   codexTaskKeys: [...DEFAULT_TASK_KEYS],
   codexCommandKeys: [...DEFAULT_COMMAND_KEYS],
   language: "zh-CN",
@@ -120,7 +123,7 @@ export const defaultSettings = {
   codexBrightness: 100,
   codexSelectedPulse: true,
   codexAmbient: false,
-  codexCommandIds: ["modelPicker", "newTask", "dictation", "voice", "toggleTerminal", "settings"],
+  codexCommandIds: ["toggleFastMode", "approve", "decline", "newTask", "dictation", "sendPrompt"],
   agentSource: "codex",
   claudeEnabled: false,
   claudeTaskKeys: [...DEFAULT_CLAUDE_TASK_KEYS],
@@ -142,6 +145,12 @@ export function validateSettings(input, previous = defaultSettings) {
   for (const [k, v] of Object.entries(input)) {
     if (k === "sidebarFeatures") {
       s[k] = validateSidebarFeatures(v);
+    } else if (k === "ambientLighting") {
+      s[k] = validateAmbientLighting(v,previous.ambientLighting);
+    } else if (k === "outputColorProfile") {
+      const profile = validateOutputColorProfile(v);
+      if (profile) s[k] = profile;
+      else delete s[k];
     } else if (k === "audio") {
       s.audio = validateAudio(v,previous.audio ?? DEFAULT_AUDIO);
     } else if (k === "agentSource") {

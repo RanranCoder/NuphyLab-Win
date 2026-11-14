@@ -1,6 +1,37 @@
+import {helperProcessEnvironment} from './native-hold-env.mjs';
+import {controlDiagnostic} from './control-diagnostic.mjs';
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { EventEmitter } from "node:events";
+import {createHash, randomUUID} from 'node:crypto';
+import path from 'node:path';
+import {applyOutputColorProfile, deriveOutputColorProfileStatus, validateOutputColorProfile} from '../shared/output-color-profile.mjs';
+import {scaleColor} from '../shared/render-animation.mjs';
+import {supportsAirConnectionWake} from './connection-wake.mjs';
+
+// Native's Kick journal directory is scoped to its serial (or USB location).
+// The legacy AIR backup directory identifies the application, not a keyboard,
+// so it must never silently qualify an AIR profile for a different device.
+export function outputColorBinding(state) {
+  if (state?.connected !== true || state.identified !== true || state.readOnly === true ||
+      state.modelId !== 'kick75' || ![0x1026, 0x1027].includes(state.productId)) return null;
+  const firmwareVersion = state.firmwareVersion ?? state.firmware;
+  const backupPath = state.backupPath;
+  if (typeof firmwareVersion !== 'string' || !/^\d{1,4}(?:\.\d{1,5}){3}$/.test(firmwareVersion) ||
+      typeof backupPath !== 'string' || !path.isAbsolute(backupPath) || path.normalize(backupPath) !== backupPath) return null;
+  const directory = path.dirname(backupPath), identity = path.basename(directory);
+  if (path.basename(path.dirname(directory)) !== 'devices' ||
+      !new RegExp(`^kick75-${state.productId.toString(16)}-(?:[a-f0-9]+|location-[1-9][0-9]*)$`).test(identity)) return null;
+  return {modelId: state.modelId, productId: state.productId, firmwareVersion,
+    deviceKey: 'native-device-v1:' + createHash('sha256').update(identity).digest('hex')};
+}
+// A retained record belonging to an earlier USB handle is history, not proof
+// that this handle has settings to restore. Native code alone classifies it.
+export function hasUnownedFunctionKeyHistory(state) {
+  return state?.unownedFunctionKeyHistory === true && state.functionKeyRecoveryPending === true &&
+    state.unsafeWritesNeeded !== true && state.historicalRecoveryLost !== true &&
+    state.keyRecovery?.ownsCurrentHandle !== true;
+}
 export function hardwareErrorMessage(code, detail) {
   const messages = {
     LIGHTING_DISABLED: "请先在键盘上按 Fn＋↑ 开启灯光，再点击播放。",
@@ -9,6 +40,7 @@ export function hardwareErrorMessage(code, detail) {
     ROUTE_MISMATCH: "键盘连接被其他软件改变，请关闭其他灯效软件后重新连接。",
     RESTORE_REQUIRED: "灯光控制已停止，原有灯效尚未恢复。请重新连接键盘后点击「恢复原有灯效」。",
     RECOVERY_REQUIRED: "上次灯光尚未恢复，请重新连接键盘后重试。",
+    PRESET_RECOVERY_CONFLICT: "键盘原灯效的预设参数暂时无法安全恢复，原始备份已保留。请提供诊断日志以便处理。",
   };
   const message = messages[code];
   if (!message) return detail;
@@ -16,8 +48,11 @@ export function hardwareErrorMessage(code, detail) {
   return message + (detail.includes("Original lighting was restored and verified.") ? "已恢复原有灯效。" : "");
 }
 export class Hardware extends EventEmitter {
-  constructor(binary, backup) {
+  #nativeHoldEnvironment;
+  constructor(binary, backup, {nativeHoldEnvironment=null}={}) {
+
     super();
+    this.#nativeHoldEnvironment=nativeHoldEnvironment;
     this.binary = binary;
     this.backup = backup;
     this.requests = new Map();
@@ -32,6 +67,13 @@ export class Hardware extends EventEmitter {
       errorCode: null,
     };
     this.child = null;
+    this.sessionId = randomUUID();
+    this.connectionGeneration = 0;
+    this.identityPresent = false;
+    this.transportEpoch = 0;
+    this.connecting = null;
+    this.outputColorProfile = null;
+    this.lastPaintAcknowledgement = null;
   }
   start() {
     if (this.child) return;
@@ -45,7 +87,7 @@ export class Hardware extends EventEmitter {
     const child = spawn(
       isScript ? process.execPath : this.binary,
       isScript ? [this.binary, "--backup", this.backup] : ["--backup", this.backup],
-      { stdio: ["pipe", "pipe", "pipe"] },
+      { stdio: ["pipe", "pipe", "pipe"], env: helperProcessEnvironment(this.#nativeHoldEnvironment) },
     );
     this.child = child;
     createInterface({ input: child.stdout }).on("line", (line) => {
@@ -57,6 +99,8 @@ export class Hardware extends EventEmitter {
       }
       if (msg.event) {
         if (msg.event === "disconnected") {
+          this.transportEpoch++;
+          this.identityPresent = false;
           this.state = {
             ...this.state,
             connected: false,
@@ -66,6 +110,12 @@ export class Hardware extends EventEmitter {
             error: null,
             errorCode: "DEVICE_NOT_FOUND",
             firmware: null,
+            firmwareVersion: null,
+            identified: false,
+            firmwareDetectionAvailable: false,
+            capabilities: null,
+            readOnly: false,
+            protocolReady: false,
             ledCount: 0,
           };
         }
@@ -82,12 +132,17 @@ export class Hardware extends EventEmitter {
       if (!req) return;
       this.requests.delete(msg.id);
       clearTimeout(req.timer);
+      if (req.epoch !== null && req.epoch !== this.transportEpoch) {
+        req.reject(Object.assign(new Error('键盘连接正在恢复，请稍候。'), {code:'SESSION_CHANGED'}));
+        return;
+      }
       if (msg.ok) req.resolve(msg.result);
       else {
         const detail = typeof msg.error === "string" ? msg.error : (msg.error?.message ?? "键盘请求失败");
         const error = new Error(hardwareErrorMessage(msg.error?.code, detail));
         error.protocolDetail = detail;
         if (typeof msg.error?.code === "string") error.code = msg.error.code;
+        error.controlDiagnostic=controlDiagnostic(msg.error?.controlDiagnostic);
         req.reject(error);
       }
     });
@@ -97,22 +152,31 @@ export class Hardware extends EventEmitter {
       this.emit("diagnostic", detail);
     });
     child.on("error", (e) => {
-      if (this.child === child) this.child = null;
+      if (this.child !== child) return;
+      this.child = null;
       this.failed(e);
     });
     // 'close' runs after stdout/stderr drain; 'exit' can precede the final
     // restore result and used to discard the only useful failure diagnostic.
     child.on("close", () => {
-      if (this.child === child) this.child = null;
+      if (this.child !== child) return;
+      this.child = null;
       this.failed(new Error("键盘控制进程已退出"));
       this.emit("disconnect");
     });
   }
   failed(error) {
+    this.transportEpoch++;
+    this.identityPresent = false;
     this.state = {
       ...this.state,
       connected: false,
       armed: false,
+      identified: false,
+      firmwareDetectionAvailable: false,
+      firmware: null,
+      firmwareVersion: null,
+      capabilities: null,
       error: error.message,
     };
     for (const req of this.requests.values()) {
@@ -122,7 +186,14 @@ export class Hardware extends EventEmitter {
     this.requests.clear();
   }
   request(op, args = {}) {
+    const deviceOperation = ['connect','status','arm','armConnectionWake','paint','restore','disconnect','readColors','nativeLighting','readKeymap',
+      'readBoardSleep','acquireBoardSleepLease','releaseBoardSleepLease',
+      'prepareFunctionKey','previewFunctionKeyRecovery','confirmFunctionKeyRecovery','side'].includes(op) ||
+      (['adaptKeys','keyMappingStatus'].includes(op) && args.transport !== 'bluetooth');
+    const epoch = deviceOperation ? this.transportEpoch : null;
     const run = async () => {
+      if (epoch !== null && epoch !== this.transportEpoch)
+        throw Object.assign(new Error('键盘连接正在恢复，请稍候。'), {code:'SESSION_CHANGED'});
       if (!this.child) this.start();
       return new Promise((resolve, reject) => {
         const id = ++this.serial;
@@ -130,7 +201,7 @@ export class Hardware extends EventEmitter {
           this.requests.delete(id);
           reject(new Error("键盘响应超时，请重新连接"));
         }, 12000);
-        this.requests.set(id, { resolve, reject, timer });
+        this.requests.set(id, { resolve, reject, timer, epoch });
         this.child.stdin.write(
           JSON.stringify({ id, op, ...args }) + "\n",
           (e) => {
@@ -143,17 +214,35 @@ export class Hardware extends EventEmitter {
         );
       });
     };
-    const promise = this.tail.then(run, run);
+    const promise = this.tail.then(run, run).then(result => {
+      // One stdout chunk can contain a successful reply followed immediately
+      // by a removal event. Resolving the reply only schedules an await
+      // continuation; the later event must still invalidate that result before
+      // connect/status/arm/restore can commit it back into the current state.
+      if (epoch !== null && epoch !== this.transportEpoch)
+        throw Object.assign(new Error('键盘连接正在恢复，请稍候。'), {code:'SESSION_CHANGED'});
+      return result;
+    });
     this.tail = promise.catch(() => {});
     return promise;
   }
-  async connect() {
+  connect(options) {
+    if (this.connecting) return this.connecting;
+    this.connecting = this.connectOnce(options).finally(() => { this.connecting = null; });
+    return this.connecting;
+  }
+  async connectOnce({connectionWake = false} = {}) {
     let identified = false;
     try {
       let result = await this.request("connect");
       this.updateState(result);
       identified = true;
-      if (result.recoveryPending && !result.armed) {
+      // A verified wake transaction can continue the original lighting journal in
+      // one native transaction. Restoring its visible stock/custom scene here
+      // would flash that scene before the startup blackout. Ordinary connects
+      // retain their existing restore-first behavior.
+      const wakePreparation = connectionWake && supportsAirConnectionWake(this.state);
+      if (result.recoveryPending && !result.armed && result.readOnly !== true && !wakePreparation) {
         await this.restore();
         result = {
           ...result,
@@ -163,8 +252,8 @@ export class Hardware extends EventEmitter {
       this.updateState({
         ...result,
         connected: true,
-        error: null,
-        errorCode: null,
+        error: result.error ?? null,
+        errorCode: result.errorCode ?? null,
       });
       return this.state;
     } catch (e) {
@@ -172,9 +261,9 @@ export class Hardware extends EventEmitter {
       // Keep the device available for recovery instead of reconnecting in a loop.
       this.state = {
         ...this.state,
-        ...(!identified ? { connected: false, firmware: null, ledCount: 0, capabilities: null } : {}),
+        ...(!identified ? { connected: false, identified: false, firmwareDetectionAvailable: false, firmware: null, firmwareVersion: null, firmwareBytes: null, ledCount: 0, capabilities: null } : {}),
         armed: false,
-        error: e.code === "DEVICE_NOT_FOUND" ? null : e.message,
+        error: ['DEVICE_NOT_FOUND','SESSION_CHANGED','DISCONNECTED'].includes(e.code) ? null : e.message,
         errorCode: e.code ?? "CONNECT_FAILED",
       };
       throw e;
@@ -182,38 +271,94 @@ export class Hardware extends EventEmitter {
   }
   async status() {
     const result = await this.request("status");
-    const pendingError = result.recoveryPending && this.state.errorCode && this.state.errorCode !== "DEVICE_NOT_FOUND";
-    this.updateState({ ...result, ...(pendingError ? { error: this.state.error, errorCode: this.state.errorCode } : result.recoveryPending === false ? { errorCode: null } : {}) });
+    const pendingError = (result.recoveryPending || result.boardSleepLease?.pending) && this.state.errorCode && this.state.errorCode !== "DEVICE_NOT_FOUND";
+    const reportedError = typeof result.errorCode === 'string' || typeof result.error === 'string' && result.error.length > 0;
+    this.updateState({ ...result, ...(!reportedError ? pendingError ? { error: this.state.error, errorCode: this.state.errorCode } : result.recoveryPending === false ? { errorCode: null } : {} : {}) });
     return this.state;
   }
   updateState(result) {
+    const present = result.connected === true || result.identified === true;
+    if (present && !this.identityPresent) {
+      this.connectionGeneration++;
+      this.identityPresent = true;
+    } else if (result.connected === false && result.identified !== true) this.identityPresent = false;
     const bytes = Array.isArray(result.firmware) ? result.firmware : this.state.firmwareBytes;
     const version = result.firmwareVersion ?? (bytes?.length === 8 && bytes[3] === 0xaa ? `${bytes[2]}.${bytes[1]}.${bytes[0]}.${bytes[4] + bytes[5] * 256}` : this.state.firmware);
     this.state = {
       ...this.state,
       ...result,
       ...(typeof result.recoveryPending === "boolean" ? { needsRestore: result.recoveryPending } : {}),
-      firmware: result.connected === false ? null : version,
+      firmware: result.connected === false && result.firmwareDetectionAvailable !== true ? null : version,
       firmwareBytes: bytes,
+      connectionSessionId: `${this.sessionId}:${this.connectionGeneration}`,
+      ...(result.connected === false && result.identified !== true ? {identified:false,firmwareDetectionAvailable:false,firmwareVersion:null} : {}),
     };
   }
-  async arm() {
-    if (!this.state.connected) throw new Error("请先连接 Air75 V3");
-    if (this.state.armed) return;
+  async arm({connectionWake = false} = {}) {
+    if (!this.state.connected) throw new Error("请先连接键盘");
+    if (this.state.readOnly === true) throw new Error(this.state.error || '当前固件未通过兼容检查，请先通过官方 NuPhyIO 更新固件。');
+    if (connectionWake) {
+      if (!supportsAirConnectionWake(this.state))
+        throw Object.assign(new Error('此键盘尚未验证启动灯效接管，未开启灯光。'), {code:'CONNECTION_WAKE_UNSUPPORTED'});
+      await this.acquireBoardSleepLease();
+      // Native validates the profile and durable original before any write;
+      // it returns only after keys and side lights are safely black. Never
+      // interpose an ordinary restore/arm which can expose a stale palette.
+      const result = await this.request('armConnectionWake');
+      this.updateState({...result, armed:true, error:null, errorCode:null});
+      return;
+    }
+    if (this.state.armed) { await this.acquireBoardSleepLease(); return; }
     // A reconnect may identify USB successfully before recovery completes, or
     // the user may change Mac/Win while it remains connected. Retry recovery
     // for the current profile before opening a new lighting session.
     await this.status();
-    if (this.state.armed) return;
+    if (this.state.armed) { await this.acquireBoardSleepLease(); return; }
     if (this.state.recoveryPending || this.state.needsRestore) await this.restore();
+    await this.acquireBoardSleepLease();
     const result = await this.request("arm");
     this.updateState({ ...result, armed: true, error: null, errorCode: null });
   }
-  async paint(colors) {
-    await this.request("paint", { colors });
+  async acquireBoardSleepLease() {
+    if (this.state.capabilities?.boardSleepLease !== true) return;
+    const result = await this.request('acquireBoardSleepLease');
+    if (result.verified !== true)
+      throw Object.assign(new Error('键盘休眠设置尚未通过校验，已停止播放。'), {code:'SLEEP_VERIFY_FAILED'});
+    if (result.boardSleepLease) this.state.boardSleepLease = result.boardSleepLease;
+    return result;
+  }
+  async paint(colors, options) {
+    const wire=this.outputColors(colors, options),session=this.state.connectionSessionId,epoch=this.transportEpoch;
+    const result=await this.request("paint", {colors:wire});
+    const previous=this.lastPaintAcknowledgement,reused=result?.skipped === true;
+    const known=reused && previous?.session === session && previous.epoch === epoch && previous.signature === wire.join('');
+    // This is acknowledgement metadata, never another write-skipping cache.
+    // A native "unchanged" reply can reuse only a frame this process observed
+    // on the same connection; it must not invent a new RGB-commit timestamp.
+    const frameCommittedAt=reused ? (known ? previous.frameCommittedAt : null) : Date.now();
+    this.lastPaintAcknowledgement={session,epoch,signature:wire.join(''),frameCommittedAt};
+    return {...result,frameCommittedAt,reusedCommittedFrame:reused};
+  }
+  setOutputColorProfile(profile) {
+    this.outputColorProfile = validateOutputColorProfile(profile);
+  }
+  outputColorProfileStatus() {
+    return deriveOutputColorProfileStatus(this.outputColorProfile, outputColorBinding(this.state));
+  }
+  outputColors(colors, {brightness} = {}) {
+    const corrected = applyOutputColorProfile(colors, this.outputColorProfile, outputColorBinding(this.state));
+    // Omitted brightness retains the original Hardware API. The service passes
+    // its unscaled frame explicitly: global dimming is linear output intensity,
+    // after the profile's transfer/gains, rather than an sRGB colour edit.
+    if (brightness === undefined) return corrected;
+    if (!Number.isFinite(brightness) || brightness < 0 || brightness > 100)
+      throw new RangeError("输出亮度应在 0–100 之间");
+    return corrected.map(color => scaleColor(color, brightness / 100));
   }
   async restore() {
-    if (!this.state.connected && !this.state.recoveryPending && !this.state.needsRestore) return;
+    if (this.state.readOnly === true && !this.state.recoveryPending && !this.state.needsRestore && !this.state.unsafeWritesNeeded && !this.state.boardSleepLease?.pending)
+      return {restored:true,verified:true,readOnly:true};
+    if (!this.state.connected && !this.state.recoveryPending && !this.state.needsRestore && !this.state.boardSleepLease?.pending) return;
     try {
       const result = await this.request("restore");
       if (result.verified !== true) throw new Error("键盘灯效恢复尚未通过校验");
@@ -227,9 +372,13 @@ export class Hardware extends EventEmitter {
     }
   }
   async disconnect() {
+    this.transportEpoch++;
     const result = await this.request("disconnect");
-    const pending = result.recoveryPending === true || result.keyRestoreErrors?.length > 0;
-    this.updateState({ ...result, connected: false, armed: false,
+    const pending = result.recoveryPending === true ||
+      result.boardSleepLease?.pending === true ||
+      (result.functionKeyRecoveryPending === true && !hasUnownedFunctionKeyHistory(result)) ||
+      result.unsafeWritesNeeded === true || result.historicalRecoveryLost === true || result.keyRestoreErrors?.length > 0;
+    this.updateState({ ...result, connected: false, identified:false, firmwareDetectionAvailable:false, armed: false,
       error: pending ? "键盘已断开，原设置备份已保留，下次连接时自动恢复。" : null,
       errorCode: pending ? "RESTORE_DEFERRED" : null });
     if (!pending) this.restoreFailure = this.keyRestoreFailure = null;

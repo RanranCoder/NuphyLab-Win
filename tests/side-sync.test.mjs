@@ -44,7 +44,9 @@ test('agent lighting follows the side strip to the task colour instead of muting
   await s.command({ op: 'stop' });
   const stopped = await s.state();
   assert.equal(stopped.device.state[10], 65, 'stopping restores the original side brightness');
-  assert.equal(stopped.device.recoveryPending, false);
+  // An enabled AI mode resumes ownership after an explicit stop, so the
+  // keyboard keeps its "restore pending" journal until the mode is disabled.
+  assert.equal(stopped.device.recoveryPending, stopped.playback.mode === 'agent');
 });
 
 test('static artwork syncs the side strip and repeats without extra writes', async t => {

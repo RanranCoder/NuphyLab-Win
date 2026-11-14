@@ -1,4 +1,6 @@
-import { blank, LED_COUNT } from "../shared/layout.mjs";
+import {getKeyboardProfile} from '../shared/keyboard-models.mjs';
+import { blank, getLayoutModel, layout } from "../shared/layout.mjs";
+import {TypingCross} from '../shared/typing-cross.mjs';
 import { DEFAULT_TRIGGER, validateTrigger } from "../shared/trigger.mjs";
 import { validateColors } from "./storage.mjs";
 
@@ -12,29 +14,37 @@ export class TriggerEffect {
     this.config = { ...DEFAULT_TRIGGER };
     this.colors = blank();
     this.startedAt = 0;
+    this.cross = null;
   }
   start(colors, config = {}) {
     const nextColors = validateColors(colors);
     const nextConfig = validateTrigger(config);
     // The final HID slot has no measured key location; never illuminate it.
-    nextColors[LED_COUNT - 1] = "#000000";
+    for (const index of getKeyboardProfile(getLayoutModel()).unmappedIndices) nextColors[index] = "#000000";
     this.colors = nextColors;
     this.config = nextConfig;
     this.armed = true;
     this.flashing = false;
     this.completed = 0;
     this.startedAt = 0;
+    this.cross = nextConfig.effect === 'cross' ? new TypingCross(layout) : null;
     return blank();
   }
-  fire(now) {
-    if (!this.armed || this.flashing) return false;
+  fire(now,code = this.config.code) {
+    if (!this.armed || !this.cross && this.flashing) return false;
     if (!Number.isFinite(now)) throw new Error("触发时钟无效");
+    if (this.cross && !this.cross.fire(code,now)) return false;
     this.startedAt = now;
     this.flashing = true;
     this.completed = 0;
     return true;
   }
   render(now) {
+    if (this.armed && this.cross) {
+      const frame=this.cross.render(now,this.config);
+      this.flashing=this.cross.activeWaves>0;
+      return frame;
+    }
     if (!this.armed || !this.flashing) return blank();
     if (!Number.isFinite(now)) throw new Error("触发时钟无效");
     const elapsed = Math.max(0, now - this.startedAt);
@@ -51,6 +61,7 @@ export class TriggerEffect {
     this.flashing = false;
     this.completed = 0;
     this.startedAt = 0;
+    this.cross = null;
     return blank();
   }
   snapshot() {
@@ -58,6 +69,7 @@ export class TriggerEffect {
       armed: this.armed,
       flashing: this.flashing,
       completed: this.completed,
+      ...(this.cross?{activeWaves:this.cross.activeWaves}:{}),
       config: { ...this.config },
     };
   }

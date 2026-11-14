@@ -15,7 +15,7 @@
     "fetch-node": "node scripts/fetch-node.mjs",
     "build": "npm run build:icon && npm run build:native && npm run build:ui",
     "start": "node server/main.mjs",
-    "test": "node --test --test-concurrency=2 tests/*.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "package": "npm run build && node scripts/package.mjs",
     "package:win": "npm run build:icon:win && npm run build:native:win && npm run build:ui && node scripts/package-win.mjs"
   },

@@ -59,8 +59,14 @@ test('service follows a task outside six slots, reacts to status changes, preser
  await s.command({op:'gameStart',gameType:'snake'});state=await s.state();assert.ok(state.colors.filter(c=>c!=='#000000').length<10);
  await s.command({op:'gameStop'});assert.equal((await s.state()).colors[0],'#ff0000');
  assert.ok((await s.state()).device.state[10] > 0,'returning to Codex links the side strip to the task colour');
- await s.command({op:'settings',settings:{codexLightMode:'keys'}});state=await s.state();assert.equal(state.colors[20],'#000000');assert.equal(state.colors[1],'#ff0000');
- await s.command({op:'settings',settings:{codexEnabled:false}});assert.equal((await s.state()).device.armed,false);
+ await s.command({op:'settings',settings:{codexLightMode:'keys'}});state=await s.state();
+ // Keys mode overlays the retained artwork (v1.2.47 semantics): non-task keys
+ // keep the paused preview colours instead of being forced black.
+ assert.equal(state.colors[20],'#112233');assert.equal(state.colors[1],'#ff0000');
+ await s.command({op:'settings',settings:{codexEnabled:false}});
+ // Disabling the overlay hands the canvas back without disarming: the paused
+ // preview stays on the keyboard (v1.2.47 semantics).
+ assert.equal((await s.state()).device.armed,true);assert.equal((await s.state()).colors[1],'#112233');
  await s.command({op:'preview',colors:Array(84).fill('#112233')});assert.deepEqual((await s.state()).colors,Array(84).fill('#112233'));
 });
 
@@ -71,6 +77,8 @@ test('whole mode shares idle timing and wakes only for the followed task, includ
  await s.configure({tasks:tasks.map(t=>t.id==='task-0'?{...t,status:'completed'}:t)});
  await new Promise(r=>setTimeout(r,150));assert.equal((await s.state()).lightPower.sleeping,true);
  await s.configure({tasks:tasks.map(t=>t.id==='task-6'?{...t,status:'completed'}:t)});
- const awake=await until(s.state,v=>!v.lightPower.sleeping&&v.colors[0]==='#00ff4c','followed task did not wake keyboard');
+ // The AI overlay stays visible through the idle sleep (v1.2.47 semantics):
+ // a followed task's status change recolours the keyboard without a wake.
+ const awake=await until(s.state,v=>v.colors[0]==='#00ff4c','followed task did not recolour keyboard');
  assert.equal(new Set(awake.colors.slice(0,83)).size,1);
 });

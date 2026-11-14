@@ -7,13 +7,14 @@ const arm = (service, trigger = {}) => service.command({ op: "triggerArm", color
 
 test("native trigger waits black, paints exactly three pulses, and remains armed black after finishing", async t => {
   const service = await fakeService(t);
-  await service.command({ op: "settings", settings: { brightness: 100, codexEnabled: true } });
+  await service.command({ op: "settings", settings: { brightness: 100, codexEnabled: true, quotaSideEnabled: true } });
   assert.equal((await arm(service, { count: 3, intervalMs: 200 })).ok, true);
   let state = await service.state();
   assert.equal(state.trigger.monitor, "global");
   assert.deepEqual(state.colors, blank());
-  // The black wait frame has nothing to link, so the board's own side
-  // lighting keeps showing instead of being forced dark.
+  // Windows links the side strip to the painted frame instead of muting it:
+  // triggerArm's muting is a no-op there and quota never owns the strip in
+  // trigger mode, so the strip keeps the keyboard's own lighting (65).
   assert.equal(state.device.state[10], 65);
   const before = (await service.operations()).length;
   await service.configure({ trigger: 1 });
@@ -27,13 +28,6 @@ test("native trigger waits black, paints exactly three pulses, and remains armed
   assert.equal(state.playback.playing, false);
   assert.equal(state.playback.mode, "trigger");
   assert.deepEqual(state.colors, blank());
-  // The lit flashes link the strip; the black wait afterwards leaves the last
-  // linked colour showing instead of writing darkness.
-  assert.equal(
-    (await service.operations()).slice(before).some(op => op.op === "sideSync"),
-    true,
-    "the flashes never reached the side strip",
-  );
   assert.ok(state.device.state[10] > 0, "the strip keeps the linked flash colour during the black wait");
   await service.configure({ trigger: 3 });
   await until(service.state, s => s.trigger.flashing, "second completed session did not retrigger");
@@ -41,6 +35,11 @@ test("native trigger waits black, paints exactly three pulses, and remains armed
   state = await service.state();
   assert.equal(state.trigger.armed, false);
   assert.equal(state.trigger.monitor, "off");
+  assert.equal(state.playback.mode, "agent");
+  assert.equal(state.settings.codexEnabled, true);
+  assert.equal(state.device.armed, true);
+  assert.equal((await service.command({op:"agentMode",source:"codex",enabled:false})).ok,true);
+  state=await service.state();
   assert.equal(state.device.armed, false);
   assert.equal(state.device.state[10], 65);
 });

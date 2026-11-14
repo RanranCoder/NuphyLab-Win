@@ -198,10 +198,7 @@ test('session gates stale data, host loss and sleep without persisting audio',()
   audio.suspend(false);assert.equal(audio.snapshot(DEFAULT_AUDIO).capture.enabled,true);
   now=13000;assert(audio.expired());audio.stop();assert.equal(audio.snapshot(DEFAULT_AUDIO).capture.enabled,false);
 });
-// B3 pending: this case asserts the Mac v1.2.47 Codex task-status lighting
-// behavior (agent-lighting-view); Win server/codex.mjs is still at the
-// v1.0.11 line. Re-enable once B3 lands.
-test('real service integrates audio rendering, live edits, Codex lights and stop/scene/game handoffs',{skip:'B3 pending: Codex task-status lighting sync'},async t=>{
+test('real service integrates audio rendering, live edits, Codex lights and stop/scene/game handoffs',async t=>{
   const s=await fakeService(t,{tasks:[{id:'audio-status-task',status:'running'}]});
   await s.command({op:'connect'});assert.equal((await s.command({op:'audioStart'})).ok,false);
   await s.command(inventory);await s.command({op:'settings',settings:{brightness:100,codexBrightness:100,codexEnabled:true,codexSelectedPulse:false,codexAmbient:false,audio:{color:'#ff0000'}}});

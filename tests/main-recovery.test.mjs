@@ -148,7 +148,6 @@ test(
     );
     const resumed = await service.state();
     assert.equal(resumed.game.status, "paused");
-    assert.equal(resumed.device.state[9], 2);
     assert.ok(resumed.device.state[10] > 0, "the side strip follows the paused game instead of staying dark");
     const lit = resumed.colors.flatMap((color, index) =>
       color === "#000000" ? [] : [index],

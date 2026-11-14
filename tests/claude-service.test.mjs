@@ -110,7 +110,7 @@ test('single-session whole-keyboard mode follows one session only',async t=>{
 test('switching the source hands the keys over without leaving Codex holding one',async t=>{
  const service=await claudeService(t,{tasks:[{id:'codex-task',title:'Codex',status:'running'}]});
  await service.command({op:'settings',settings:{codexEnabled:true}});
- assert.equal((await service.command({op:'codexKey',code:'F9',phase:'down'})).ok,true);
+ assert.equal((await service.nativeKey({op:'codexKey',code:'F9',phase:'down'})).ok,true);
  assert.equal((await service.state()).codex.keys.held.source,'F9');
  await service.command({op:'settings',settings:{agentSource:'claude',claudeEnabled:true}});
  const state=await service.state();
@@ -125,7 +125,7 @@ test('a task key in Claude Code mode acts on the Claude session, not on a Codex 
  const service=await claudeService(t,{tasks:[{id:'codex-task',title:'Codex',status:'running'}]});
  await service.command({op:'settings',settings:{agentSource:'claude',claudeEnabled:true,claudeTaskAction:'selectOnly'}});
  await hook(service,{hook_event_name:'UserPromptSubmit',session_id:'bound',cwd:'/Users/x/bound'});
- await until(service.state,v=>v.claude.tasks.length===1,'session did not appear');
+ await until(service.state,v=>v.claude.slots[0]?.id==='bound'&&v.claude.lighting.ownsOutput,'session did not reach its acknowledged task key');
  const pressed=await service.command({op:'codexKey',code:'F1',phase:'down'});
  assert.equal(pressed.ok,true,JSON.stringify(pressed));
  assert.equal(pressed.result.selected,'bound');
@@ -140,7 +140,7 @@ test('command keys run locally and never answer a permission request',async t=>{
    claudeCommandIds:['nextAttention','nextTask','prevTask','toggleLightMode','wakeLights','refresh']}});
  await hook(service,{hook_event_name:'UserPromptSubmit',session_id:'busy',cwd:'/Users/x/busy'});
  await hook(service,{hook_event_name:'PermissionRequest',session_id:'asking',tool_name:'Write'});
- await until(service.state,v=>v.claude.tasks.length===2,'sessions did not appear');
+ await until(service.state,v=>v.claude.slots.filter(Boolean).length===2&&v.claude.lighting.ownsOutput,'sessions did not reach their acknowledged task keys');
  const attention=await service.command({op:'codexKey',code:'F7',phase:'down'});
  await service.command({op:'codexKey',code:'F7',phase:'up'});
  assert.equal(attention.result.selected,'asking');
@@ -165,7 +165,7 @@ test('custom and swapped Claude task/command keys use their own bindings and pre
   claudeCommandIds:['toggleLightMode','nextTask','prevTask','refresh','toggleLightMode','refresh']}});
  await hook(service,{hook_event_name:'UserPromptSubmit',session_id:'one',cwd:'/Users/x/one'});
  await hook(service,{hook_event_name:'Stop',session_id:'two',cwd:'/Users/x/two'});
- await until(service.state,v=>v.claude.tasks.length===2,'sessions did not appear');
+ await until(service.state,v=>v.claude.slots[0]?.id==='one'&&v.claude.slots[1]?.id==='two'&&v.claude.lighting.ownsOutput,'custom sessions did not reach their acknowledged task keys');
  const press=async code=>{
   const result=await service.command({op:'codexKey',code,phase:'down'});
   await service.command({op:'codexKey',code,phase:'up'});
@@ -261,12 +261,8 @@ test('a task key opens the matching Claude Code session through its own deep lin
  assert.equal(descriptor.ok,true,JSON.stringify(descriptor));
  assert.equal(descriptor.result.opened,`claude://code/continue?session=${desk}`);
  const actions=(await service.operations()).filter(entry=>entry.op==='claudeExternalAction');
- // The fake runner logs the exact carrier call: `open -- <url>` on macOS,
- // `cmd /d /s /c start "" <url>` on Windows.
- if(process.platform==='win32'){
-  assert.equal(actions.at(-1).file.split('\\').pop(),'cmd.exe');
-  assert.equal(actions.at(-1).args.at(-1),`start "" "claude://code/continue?session=${desk}"`);
- }else{
-  assert.deepEqual(actions.at(-1).args,['--',`claude://code/continue?session=${desk}`]);
- }
+ // Windows launches deep links through cmd's start builtin; macOS uses open.
+ assert.deepEqual(actions.at(-1).args,process.platform==='win32'
+   ?['/d','/s','/c','start "" '+`"claude://code/continue?session=${desk}"`]
+   :['--',`claude://code/continue?session=${desk}`]);
 });

@@ -17,64 +17,48 @@ test('duplicate physical terminal press sends only one toggle',async t=>{
 test('dictation release survives binding changes and mode changes without an orphan keydown',async t=>{
  const service=await fakeService(t,{tasks});
  await service.command({op:'settings',settings:{codexEnabled:true}});
- assert.equal((await service.command({op:'codexKey',code:'F9',phase:'down'})).ok,true);
+ assert.equal((await service.nativeKey({op:'codexKey',code:'F9',phase:'down'})).ok,true);
  assert.equal((await service.state()).codex.keys.held.source,'F9');
- assert.equal((await service.operations()).filter(x=>x.op==='shortcut').at(-1).phase,'down');
+ assert.equal((await service.operations()).filter(x=>x.op==='codexControl').at(-1).phase,'down');
  await service.command({op:'codexBind',group:'command',index:2,code:'KeyA'});
  assert.equal((await service.state()).codex.keys.held,null);
- assert.equal((await service.operations()).filter(x=>x.op==='shortcut').at(-1).phase,'up');
- assert.equal((await service.command({op:'codexKey',code:'F9',phase:'up'})).ok,true);
- await service.command({op:'codexKey',code:'KeyA',phase:'down'});
+ assert.equal((await service.operations()).filter(x=>x.op==='codexControl').at(-1).phase,'up');
+ assert.equal((await service.nativeKey({op:'codexKey',code:'F9',phase:'up'})).ok,true);
+ await service.nativeKey({op:'codexKey',code:'KeyA',phase:'down'});
  await service.command({op:'gameStart',gameType:'snake'});
  assert.equal((await service.state()).codex.keys.held,null);
- assert.equal((await service.command({op:'codexKey',code:'KeyA',phase:'up'})).ok,true);
+ assert.equal((await service.nativeKey({op:'codexKey',code:'KeyA',phase:'up'})).ok,true);
 });
 test('native command failures return a visible localized status instead of failing silently',async t=>{
  const service=await fakeService(t,{tasks,shortcutPermissionError:true});
  await service.command({op:'settings',settings:{codexEnabled:true}});
  const result=await service.command({op:'codexKey',code:'F12'});
- assert.equal(result.ok,false);
- // macOS names the Accessibility permission; Windows has none, so the same
- // failure surfaces as a retry hint.
- const pattern=process.platform==='win32'?/发送系统快捷键失败/:/辅助功能权限/;
- assert.match(result.error,pattern);
+ assert.equal(result.ok,false);assert.match(result.error,/辅助功能权限/);
  const event=(await service.state()).codex.keys.lastEvent;
- assert.equal(event.code,'F12');assert.equal(event.ok,false);assert.match(event.error,pattern);
+ assert.equal(event.code,'F12');assert.equal(event.ok,false);assert.match(event.error,/辅助功能权限/);
 });
-test('current Codex global dictation receives exactly one down/up and is released when mode is disabled',async t=>{
- const service=await fakeService(t,{tasks,codexKeybindings:[
-  {command:'composer.startDictation',key:'F11'},
-  {command:'globalDictationHold',key:'Ctrl+Shift+D'},
- ]});
+test('semantic dictation receives one owned down/up despite global key settings, and disabling mode releases it',async t=>{
+ const service=await fakeService(t,{tasks,codexKeybindings:[{command:'globalDictationHold',key:'Ctrl+Shift+D'}]});
  await service.command({op:'settings',settings:{codexEnabled:true}});
- assert.equal((await service.command({op:'codexKey',code:'F9',phase:'down'})).ok,true);
- await service.command({op:'codexKey',code:'F9',phase:'down'});
- let events=(await service.operations()).filter(x=>x.op==='shortcut');
- assert.equal(events.length,1);assert.equal(events[0].delivery,'globalHold');
- assert.equal(events[0].keyCode,2);assert.equal(events[0].phase,'down');
+ assert.equal((await service.nativeKey({op:'codexKey',code:'F9',phase:'down'})).ok,true);
+ await service.nativeKey({op:'codexKey',code:'F9',phase:'down'});
+ let events=(await service.operations()).filter(x=>x.op==='codexControl');
+ assert.equal(events.length,1);assert.equal(events[0].action,'dictation');assert.equal(events[0].phase,'down');
  await service.command({op:'settings',settings:{codexEnabled:false}});
- await service.command({op:'codexKey',code:'F9',phase:'up'});
- events=(await service.operations()).filter(x=>x.op==='shortcut');
- assert.deepEqual(events.map(x=>x.phase),['down','up']);
- assert.equal((await service.state()).codex.keys.held,null);
+ await service.nativeKey({op:'codexKey',code:'F9',phase:'up'});
+ events=(await service.operations()).filter(x=>x.op==='codexControl');
+ assert.deepEqual(events.map(x=>x.phase),['down','up']);assert.equal((await service.state()).codex.keys.held,null);
 });
-test('single-tap dictation keeps key-release and repeat events from immediately stopping recording',async t=>{
- const service=await fakeService(t,{tasks,codexKeybindings:[
-  {command:'globalDictationHold',key:null},
-  {command:'globalDictationSingleTap',key:'Ctrl+Shift+D'},
- ]});
+test('physical dictation stays hold-to-talk with legacy toggle settings and direct HTTP cannot start it',async t=>{
+ const service=await fakeService(t,{tasks,codexKeybindings:[{command:'globalDictationHold',key:null},{command:'globalDictationSingleTap',key:'Ctrl+Shift+D'}]});
  await service.command({op:'settings',settings:{codexEnabled:true}});
- await until(service.state,s=>s.codex.keys.dictation.mode==='toggle','toggle UI did not follow current keymap');
- await service.command({op:'codexKey',code:'F9',phase:'down'});
- await service.command({op:'codexKey',code:'F9',phase:'down'});
- await service.command({op:'codexKey',code:'F9',phase:'up'});
- let events=(await service.operations()).filter(x=>x.op==='shortcut');
- assert.equal(events.length,1);assert.equal(events[0].delivery,'globalTap');assert.equal(events[0].phase,'tap');
+ assert.equal((await service.state()).codex.keys.dictation.mode,'hold');
+ await service.nativeKey({op:'codexKey',code:'F9',phase:'down'});await service.nativeKey({op:'codexKey',code:'F9',phase:'down'});
+ await service.nativeKey({op:'codexKey',code:'F9',phase:'up'});
  assert.equal((await service.state()).codex.keys.held,null);
- await service.command({op:'codexAction',action:'dictation',phase:'down',source:'button'});
+ assert.equal((await service.command({op:'codexAction',action:'dictation',phase:'down',source:'button'})).ok,false);
  await service.command({op:'settings',settings:{codexEnabled:false}});
- events=(await service.operations()).filter(x=>x.op==='shortcut');
- assert.deepEqual(events.map(x=>x.phase),['tap','tap']);
+ assert.deepEqual((await service.operations()).filter(x=>x.op==='codexControl').map(x=>x.phase),['down','up']);
 });
 test('Micro slot mappings and command keys use the centralized action path without inventing approval',async t=>{
  const service=await fakeService(t,{tasks});
@@ -90,7 +74,7 @@ test('Micro slot mappings and command keys use the centralized action path witho
   const sent=(await service.operations()).filter(o=>o.op==='shortcut').at(-1);
   assert.ok(Number.isInteger(sent.keyCode),action.id);
   // Wire modifiers keep the macOS vocabulary: Windows displays "Alt", the
-  // bridge receives the canonical "option".
+  // protocol still carries "option".
   const canonical=s=>({alt:'option'})[s.toLowerCase()]??s.toLowerCase();
   assert.deepEqual(sent.modifiers,action.keys.slice(0,-1).map(canonical));
  }
@@ -121,27 +105,29 @@ test('preview exposes acknowledged RGB, scales brightness once and diagnoses rea
  await service.configure({mismatchIndex:null});
  await service.command({op:'settings',settings:{brightness:50,codexEnabled:true,codexBrightness:50,codexSelectedPulse:false}});
  const state=await until(service.state,s=>s.colors[1]==='#0c1440','Micro brightness was not applied once per level');
- assert.equal(state.colors[0],'#000000','Codex turns unrelated lighting off');
+ assert.equal(state.colors[0],'#800000','Codex overlays its bound keys while the ordinary artwork keeps its brightness');
  assert.equal(state.colors[2],'#401c00');
  assert.equal((await service.command({op:'verifyColors'})).result.matches,true);
  await service.command({op:'settings',settings:{codexEnabled:false}});
- assert.equal((await service.state()).device.armed,false,'disabling Codex restores the board');
+ assert.equal((await service.state()).device.armed,true,'disabling Codex keeps the ordinary artwork active');
  await service.command({op:'preview',colors:frame});
  assert.equal((await service.state()).colors[1],'#008000','the saved drawing can still be played');
  await service.command({op:'stop'});
  assert.equal((await service.command({op:'verifyColors'})).ok,false);
 });
-test('enabling Codex cancels a paused animation and clears non-task keys',async t=>{
+test('enabling Codex overlays a paused animation without changing its position or other pixels',async t=>{
  const service=await fakeService(t,{tasks:[tasks[0]]});
+ await service.command({op:'settings',settings:{brightness:100}});
  await service.command({op:'play',colors:Array(84).fill('#112233'),animation:{effect:'pulse',speed:4,loop:true}});
  await service.command({op:'pause'});
+ const before=await service.state();
  await service.command({op:'settings',settings:{brightness:100,codexEnabled:true,codexSelectedPulse:false}});
  const active=await service.state();
- assert.equal(active.playback.mode,'agent');assert.equal(active.playback.playing,false);assert.equal(active.colors[20],'#000000');
+ assert.equal(active.playback.mode,'paused');assert.equal(active.playback.playing,false);assert.equal(active.playback.elapsed,before.playback.elapsed);assert.equal(active.colors[20],before.colors[20]);
  await service.configure({tasks:[{...tasks[0],status:'completed'}]});
  await until(service.state,s=>s.colors[1]==='#00ff4c','task state stayed blue');
  await service.command({op:'settings',settings:{codexEnabled:false}});
- assert.equal((await service.state()).device.armed,false);
+ assert.equal((await service.state()).device.armed,true);assert.equal((await service.state()).playback.elapsed,before.playback.elapsed);
 });
 
 test('direct task keys and commands remap atomically, move lights, and pause for games',async t=>{
