@@ -19,7 +19,7 @@ main { padding: 20px 24px; }
 .button.icon-button { min-width: 34px; min-height: 34px; padding: 7px; }
 .work-identity { gap: 10px; margin-top: 6px; }
 .work-name { display: flex; align-items: center; gap: 6px; padding: 1px 5px; margin-left: -5px; border: 1px solid transparent; border-radius: 5px; color: #999993; }
-.work-name:hover, .work-name:focus-within { border-color: var(--line); background: var(--wash); }
+.work-name:hover, .work-name:focus-within { border-color: var(--line); background: #fafaf9; }
 .work-name .title-input { width: 148px; font-size: 12px; }
 .work-identity > span { font-size: 11px; }
 .studio-page .studio-workspace { border: 0; border-radius: 0; overflow: visible; }
@@ -43,7 +43,7 @@ main { padding: 20px 24px; }
 .studio-page .playback-status .switch-field { font-size: 11px; gap: 8px; }
 .studio-page .trigger-pattern-caption { font-size: 11px; margin: -8px 0 9px; }
 .studio-page .trigger-canvas-title, .studio-page .game-title { font-size: 12px; }
-.studio-page .inspector { display: grid; grid-template-columns: minmax(300px, 1.5fr) minmax(180px, 1fr) minmax(160px, .85fr); gap: 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--line); background: var(--panel); }
+.studio-page .inspector { display: grid; grid-template-columns: minmax(300px, 1.5fr) minmax(180px, 1fr) minmax(160px, .85fr); gap: 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--line); background: #fff; }
 .studio-page .inspector > section { min-width: 0; padding: 0 20px; margin: 0; border: 0; }
 .studio-page .inspector > section:first-child { padding-left: 4px; border-right: 0; }
 .studio-page .inspector > section + section { border-left: 1px solid var(--line); }
@@ -206,7 +206,7 @@ main { padding: 20px 24px; }
 .preset-library-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 18px; }
 .preset-library-toolbar p, .preset-preview-note { font-size: 11px; line-height: 1.7; color: var(--muted); }
 .preset-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.preset-card { min-width: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.preset-card { min-width: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff; }
 .preset-art { display: block; width: 100%; background: #f6f6f4; padding: 18px 14px; border: 0; border-bottom: 1px solid var(--line); }
 .preset-art:hover { background: #eeefea; }
 .preset-info { padding: 13px 14px 9px; }
@@ -302,10 +302,7 @@ main { padding: 20px 24px; }
 
 /* One persistent language control; timers are grouped with their device scope. */
 .language-selector { margin-top:auto; padding:16px 12px 6px; display:grid; gap:7px; font-size:10px; color:var(--muted); }
-.language-selector select { width:100%; min-width:0; padding:7px 9px; font-size:12px; background:var(--panel); border:1px solid var(--line); border-radius:6px; }
-/* Sits directly under the language control: only the first one carries the
-   auto margin that pins the footer group to the bottom. */
-.appearance-selector { margin-top:0; padding-top:2px; }
+.language-selector select { width:100%; min-width:0; padding:7px 9px; font-size:12px; background:#fff; border:1px solid var(--line); border-radius:6px; }
 .sidebar .sidebar-device { margin-top:12px; }
 .lighting-timers { margin:24px 0; padding:22px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
 .lighting-timers h2 { font-size:17px; }
@@ -398,7 +395,7 @@ html[lang="en"] .switch-field > button { flex-shrink:0; }
 .codex-palette .section-heading { margin-bottom:10px; }
 .codex-palette h3 { font-size:13px; font-weight:500; }
 .codex-palette-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
-.status-color-button { display:flex; align-items:center; gap:10px; min-height:42px; border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:9px 12px; text-align:left; font-size:12px; }
+.status-color-button { display:flex; align-items:center; gap:10px; min-height:42px; border:1px solid var(--line); border-radius:8px; background:#fff; padding:9px 12px; text-align:left; font-size:12px; }
 .status-color-button:hover { border-color:#71958b; background:#f8faf8; }
 .status-color-swatch { width:18px; height:18px; border:1px solid #0002; border-radius:50%; flex:none; }
 .status-color-editor { max-width:380px; margin:auto; }

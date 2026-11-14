@@ -1,6 +1,10 @@
+import {isKeyboardModel} from '../../shared/keyboard-models.mjs';
+import {getLayoutModel} from '../../shared/layout.mjs';
+import {friendlyConnectionError} from './KeyRecoveryPanel';
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppState, Key, Notify } from "./types";
 import {nativeCodexKeys} from './codexKeys';
+import { setLayoutModel } from "../../shared/layout.mjs";
 declare global {
   interface Window {
     __AIR_TOKEN__?: string;
@@ -20,9 +24,10 @@ async function request(path: string, body?: Record<string, unknown>) {
   });
   const value = await res.json();
   if (!res.ok || value.ok === false)
-    throw new Error(value.error || `请求失败 (${res.status})`);
+    throw new Error(friendlyConnectionError(value.error || `请求失败 (${res.status})`));
   return value;
 }
+export async function readAppState():Promise<AppState> { return request("/api/state"); }
 export function useAirApi(notify: Notify) {
   const [state, setState] = useState<AppState | null>(null);
   const [layout, setLayout] = useState<Key[]>([]);
@@ -32,6 +37,17 @@ export function useAirApi(notify: Notify) {
   const latestState = useRef<AppState | null>(null);
   const refreshId = useRef(0);
   const appliedRefresh = useRef(0);
+  const layoutSignature = useRef("");
+  const applyLayout = useCallback((keys: Key[], modelId?: string) => {
+    const model = isKeyboardModel(modelId) ? modelId : getLayoutModel();
+    // Animation thumbnails use the shared module geometry, alongside React.
+    setLayoutModel(model);
+    const signature = model + JSON.stringify(keys);
+    if (signature !== layoutSignature.current) {
+      layoutSignature.current = signature;
+      setLayout(keys);
+    }
+  }, []);
   const refresh = useCallback(async () => {
     if (window.__AIR_EXITING__) return;
     const id = ++refreshId.current;
@@ -42,6 +58,7 @@ export function useAirApi(notify: Notify) {
         await nativeCodexKeys({kind:'config',value:next.codex?.keys}).catch(()=>{});
         if (!mounted.current || window.__AIR_EXITING__ || id !== appliedRefresh.current) return;
         latestState.current = next;
+        if (Array.isArray(next.layout)) applyLayout(next.layout, next.device?.modelId);
         setState(next);
         setServiceError("");
       }
@@ -51,7 +68,7 @@ export function useAirApi(notify: Notify) {
           error instanceof Error ? error.message : "本地服务未响应",
         );
     }
-  }, []);
+  }, [applyLayout]);
   useEffect(() => {
     const changed = () => { setExiting(Boolean(window.__AIR_EXITING__)); setServiceError(""); };
     window.addEventListener("nuphylab:shutdown", changed);
@@ -82,7 +99,10 @@ export function useAirApi(notify: Notify) {
     const getLayout = async () => {
       try {
         const value = await request("/api/layout");
-        if (active) setLayout(Array.isArray(value) ? value : value.keys || []);
+        if (active) {
+          const current = latestState.current?.layout;
+          applyLayout(Array.isArray(current) ? current : Array.isArray(value) ? value : value.keys || [], latestState.current?.device.modelId);
+        }
       } catch {
         if (active && !window.__AIR_EXITING__) timer = setTimeout(getLayout, 2000);
       }
@@ -92,21 +112,21 @@ export function useAirApi(notify: Notify) {
       active = false;
       clearTimeout(timer);
     };
-  }, []);
+  }, [applyLayout]);
   const command = useCallback(
-    async (body: Record<string, unknown>) => {
+    async (body: Record<string, unknown>, options?: {silent?:boolean}) => {
       try {
         const value = await request("/api/command", body);
         await refresh();
         return value.result;
       } catch (error) {
-        if (!window.__AIR_EXITING__) notify(error instanceof Error ? error.message : "操作失败");
+        if (!window.__AIR_EXITING__ && !options?.silent) notify(error instanceof Error ? error.message : "操作失败");
         throw error;
       }
     },
     [notify, refresh],
   );
-  return { state, layout, serviceError, command, refresh, exiting };
+  return { state, layout, serviceError, command, refresh, readState:readAppState, exiting };
 }
 export function exportScenes(scenes: unknown, name: string) {
   const blob = new Blob(

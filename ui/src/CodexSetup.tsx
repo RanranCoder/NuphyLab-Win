@@ -1,76 +1,62 @@
-import {useEffect,useState} from 'react';
-import {Check, CircleAlert, Keyboard, ArrowUpRight, RotateCcw} from 'lucide-react';
-import {Button,Modal,run} from './primitives';
+import {useEffect,useRef,useState} from 'react';
+import {Check,CircleAlert,Keyboard} from 'lucide-react';
+import {Button,Modal} from './primitives';
 import {t} from './i18n';
+import {refreshAppPermissions,requestAppPermission,showFirmwareGuide} from './StartupGuide';
+import {friendlyConnectionError,keyRecoveryProblem} from './KeyRecoveryPanel';
+import {keyboardPermissions} from './keyboardPermissions';
 import type {AppState,Command} from './types';
 
 type Adaptation={status?:string;ready?:string[];unsupported?:string[];shared?:string[];mapped?:number;error?:string};
-export function CodexSetup({state,command,source='codex'}:{state:AppState|null;command:Command;source?:'codex'|'claude'}) {
-  const [open,setOpen]=useState(false),[busy,setBusy]=useState(false);
-  const enabled=state?.settings.codexKeyAdaptation===true;
-  const a=(state?.codex.adaptation??{}) as Adaptation;
-  const host=(state?.codex.keys as {host?:{registered:string[];failed:string[];suspended:boolean}}|undefined)?.host;
-  const permissions=state?.native??{},input=permissions.inputMonitoring===true,
-    access=permissions.accessibility===true&&permissions.canPostEvents===true;
-  const wireless=state?.bluetooth?.connected===true&&!state?.device.connected;
-  // Windows v1 does not port the macOS key-remap layer; the dialog keeps the
-  // connection and registration checklist but never offers to adapt keys.
-  const isWindows=state?.build?.platform==="win32";
-  // An ad-hoc signed build gets a new code identity on every rebuild, so macOS
-  // keeps the checkbox but stops honouring the grant. Say what to do about it.
-  const adhoc=(state?.build as {adhoc?:boolean}|undefined)?.adhoc===true;
-  const staleGrant=adhoc&&(!input||!access);
-  const connected=state?.device.connected===true||wireless;
-  const registered=host?.registered.length===12 && host.failed.length===0;
-  const complete=enabled&&a.status==='ready'&&registered&&host?.suspended!==true&&input&&access;
-  const title=!enabled?(wireless?'蓝牙快捷控制':source==='claude'?'让功能键控制 Claude Code':'让功能键控制 Codex'):complete?(wireless?'蓝牙按键适配已就绪':'按键适配已就绪'):a.status==='partial'?'部分按键需要设置':a.status==='permissions'?'完成授权后自动继续':a.status==='waitingDevice'?'等待连接键盘':a.status==='error'?'按键适配未完成':a.status==='paused'?'按键适配已暂停':'正在检查按键适配';
-  const act=async(op:string)=>{setBusy(true);try{await command({op});}finally{setBusy(false);}};
-  const begin=()=>{setOpen(true);run(act('codexAdapt'));};
-  useEffect(()=>{
-    if(!open)return;
-    const refresh=()=>{void command({op:'refreshPermissions'}).catch(()=>{});};
-    window.addEventListener('focus',refresh);
-    return()=>window.removeEventListener('focus',refresh);
-  },[open,command]);
-  const openDriver=async()=>{
-    await act('codexAdaptDriver');
-    window.location.assign('https://drive.nuphy.io/');
-  };
-  const row=(label:string,ok:boolean,detail:string,action?:React.ReactNode)=><div className="codex-setup-row">
-    {ok?<Check size={17}/>:<CircleAlert size={17}/>}<div><strong>{t(label)}</strong><p>{t(detail)}</p></div>{action}
-  </div>;
+export function CodexSetup({state,command,source='codex'}:{state:AppState|null;command:Command;source?:'codex'|'claude'}){
+  const connectionIssue=keyRecoveryProblem(state);
+  const [open,setOpen]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const lock=useRef(false);
+  const name=source==='claude'?'Claude Code':'Codex';
+  const enabled=(state?.settings.agentSource==='claude'?'claude':'codex')===source&&state?.settings[`${source}Enabled`]===true,a=(state?.codex.adaptation??{}) as Adaptation;
+  const host=(state?.codex.keys as {host?:{registered?:string[];failed?:string[];suspended?:boolean}}|undefined)?.host;
+  const {input,access,inputReady,accessReady,applying,needsReopen}=keyboardPermissions(state?.native);
+  const permissionsReady=inputReady&&accessReady&&!applying;
+  const permissionMessage=applying?'正在应用系统授权…':needsReopen?'若重新检查后仍不可用，请重新打开 NuPhy Lab。':
+    input==='unknown'||access==='unknown'?'正在检查权限…':'完成下面两项授权后继续。';
+  const wireless=state?.bluetooth?.connected===true&&!state?.device.connected,connected=state?.device.connected===true||wireless;
+  const firmwareUpdate=state?.firmware?.upgradeRecommended===true;
+  const registered=host?.registered?.length===12&&host.failed?.length===0;
+  const complete=!connectionIssue&&enabled&&a.status==='ready'&&registered&&host?.suspended!==true&&permissionsReady;
+  const model=state?.device.model?.replace(/ ANSI$/,'')??state?.firmware?.modelName??'键盘';
+  const summary=firmwareUpdate?'请先在 NuPhyIO 安装推荐固件。':!connected?'请使用 USB 数据线连接键盘。':!permissionsReady?permissionMessage:connectionIssue?'请关闭其他键盘设置程序，再重新连接。':busy?'正在检查当前绑定按键…':complete?'当前绑定按键已准备好。':host?.suspended?'编辑、按键触发或游戏期间，快捷控制暂时暂停。':wireless?'蓝牙已连接。灯光播放仍需 USB。':'连接并授权后继续设置绑定按键。';
+  const act=async(op:string)=>{if(lock.current)return;lock.current=true;setBusy(true);setError('');try{
+    if(op==='refreshPermissions')await refreshAppPermissions(command,{silent:true});
+    else await command(op==='agentMode'?{op,source,enabled:true}:{op,source},{silent:true});
+  }catch(failure){setError(failure instanceof Error?failure.message:'设置尚未完成，请重新检查。');}finally{lock.current=false;setBusy(false);}};
+  const begin=()=>{if(firmwareUpdate){showFirmwareGuide();return;}setOpen(true);setError('');if(!connectionIssue)void act('agentMode');};
+  const check=()=>{if(firmwareUpdate){setOpen(false);showFirmwareGuide();return;}void act(connectionIssue||!connected?'connect':!enabled?'agentMode':permissionsReady?'codexAdaptCheck':'refreshPermissions');};
+  const permission=async(kind:'inputMonitoring'|'accessibility')=>{if(lock.current)return;lock.current=true;setBusy(true);setError('');try{await requestAppPermission(command,kind,{silent:true});}catch(failure){setError(failure instanceof Error?failure.message:'无法完成授权请求，请重试。');}finally{lock.current=false;setBusy(false);}};
+  useEffect(()=>{if(!open)return;const refresh=()=>{void refreshAppPermissions(command,{silent:true}).catch(()=>{});};window.addEventListener('focus',refresh);return()=>window.removeEventListener('focus',refresh);},[open,command]);
+  const row=(label:string,ok:boolean,detail:string,action?:React.ReactNode)=><div className="agent-setup-row-v6">{ok?<Check size={16} strokeWidth={1.5}/>:<CircleAlert size={16} strokeWidth={1.5}/>}<div><strong>{t(label)}</strong><p>{t(detail)}</p></div>{action??<span className={ok?'agent-row-ready':'agent-row-pending'}>{t(ok?'已就绪':'待完成')}</span>}</div>;
+  const permissionAction=(kind:'inputMonitoring'|'accessibility',status:typeof input)=>status==='denied'?
+    <Button disabled={busy} onClick={()=>{void permission(kind);}}>{t('允许')}</Button>:
+    <span className={status==='ready'?'agent-row-ready':'agent-row-pending'}>{t(status==='ready'?'已允许':status==='allowed'?'已授权，等待生效':'正在检查权限…')}</span>;
   return <>
-    <section className="codex-setup-banner" aria-label={t('键盘适配')}>
-      <Keyboard size={19}/><div><strong>{t(title)}</strong><p>{t(wireless?'保留任务跳转与命令键；键盘状态灯需要 USB 有线连接。':isWindows?'键盘需处于标准 F 键模式，F1–F12 将用于任务与命令。':!enabled?'F1–F12 仍在调亮度或音量？一键检查并适配。':complete?'已记住设置，下次连接自动恢复。':'查看检查结果，完成剩余设置。')}</p></div>
-      <Button busy={busy} onClick={isWindows||enabled?()=>setOpen(true):begin}>{t(wireless?'连接与按键':isWindows?'连接与检查':enabled?'查看适配':'适配这把键盘')}</Button>
+    <section className="codex-setup-banner" aria-label={t('键盘设置')}>
+      <Keyboard size={19}/><div><strong>{t('功能键')}</strong><p>{t(firmwareUpdate?'前往 NuPhyIO 安装最新固件后即可使用。':!connected?'请使用 USB 数据线连接键盘。':!permissionsReady?permissionMessage:connectionIssue?'请关闭其他键盘设置程序，重新连接键盘。':complete?'当前绑定按键已准备好':host?.suspended?'编辑或游戏期间暂时暂停。':enabled?'正在检查当前绑定按键':`${name} 模式未开启`)}</p></div>
+      <Button busy={busy} onClick={firmwareUpdate?showFirmwareGuide:enabled?()=>{setOpen(true);check();}:begin}>{firmwareUpdate?t('前往更新'):enabled?t('重新检查'):t(`开启 ${name} 模式`)}</Button>
     </section>
-    {open&&<Modal title={t('键盘适配')} onClose={()=>setOpen(false)}>
-      <div className="codex-setup-dialog">
-        <p className="muted">{t(isWindows?'Windows 版不改写键盘键位；请将键盘切换为标准 F 键模式，绑定键用于任务与命令。':wireless?'蓝牙使用已有的任务和命令绑定，不改写键盘键位。':'只适配通过 USB 连接的 Air75 V3，保留你的任务和命令绑定。')}</p>
-        {row('键盘连接',connected,wireless?'Air75 V3 蓝牙已连接':connected?'Air75 V3 已连接':'连接 USB 或蓝牙后重新检查。',!connected&&<Button busy={busy} onClick={()=>run(act('refreshBluetooth'))}>{t('检查连接')}</Button>)}
-        {row('输入监控',input,input?'已允许':'用于接收并适配功能键。',!input&&<Button onClick={()=>run(command({op:'openPermissionSettings',permission:'inputMonitoring'}))}>{t('允许')}</Button>)}
-        {row('辅助功能',access,access?'已允许':source==='claude'?'命令动作不需要此权限；macOS 保留的功能键（如 F11）需要它才能接收。':'用于执行 Codex 命令。',!access&&<Button onClick={()=>run(command({op:'openPermissionSettings',permission:'accessibility'}))}>{t('允许')}</Button>)}
-        {isWindows ? <div className="codex-setup-help"><p>{t('功能键由键盘自身设置决定：请在键盘或官方驱动中启用标准 F1–F12，NuPhyLab 不会修改键位。')}</p></div> : wireless ? <>{row('功能键配置',a.status==='ready',a.status==='ready'?'系统已确认蓝牙功能键兼容设置。':'连接并授权后自动检查。')}<div className="codex-setup-help"><p>{t('兼容标准 F1–F12，以及发送 F13–F24 的扩展功能键模式。仍可点击「更改」绑定其他按键。')}</p><p>{t('如果按键仍在调节亮度或音量，请使用标准 F 键的 Fn 组合，或更改绑定。')}</p></div></> : row('功能键配置',a.status==='ready',a.status==='ready'?(a.mapped?'系统已确认功能键转换。':'当前已经是标准功能键。'):a.unsupported?.length?'以下按键需要在官方驱动中设置为对应的标准 F 键。':a.status==='error'?'暂时无法完成，请查看下方原因。':'连接并授权后自动检查。')}
-        {!!a.unsupported?.length&&<div className="codex-setup-help"><div className="codex-setup-key-list">{a.unsupported.map(code=><kbd key={code}>{code}</kbd>)}</div><p>{t('官方驱动 → 按键设置 → 当前模式的基础层：将这些位置设为同名 F 键，完成后返回连接。')}</p><Button icon={<ArrowUpRight size={14}/>} busy={busy} onClick={()=>run(openDriver())}>{t('打开官方按键设置')}</Button></div>}
-        {row('快捷键注册',registered,host?.failed.length?'部分按键尚未接管；请确认授权后重新检查。':registered?'12 个快捷键已注册。':host?.suspended?'编辑或游戏期间暂时暂停。':'等待应用注册快捷键。')}
-        {!!host?.failed.length&&<p className="muted">{host.failed.join(' · ')}</p>}
-        {staleGrant&&<div className="codex-setup-help">
-          <p>{t('这个安装包使用 ad-hoc 本机签名，重新打包后代码标识会改变。如果系统设置里已经勾选却仍显示未允许，请在该列表中选中 NuPhyLab 点「−」移除，再用「＋」重新添加并勾选。')}</p>
-          <p>{t('用 Apple 开发者证书重新打包可以避免这一步；届时授权一次即可长期有效。')}</p>
-        </div>}
-        {a.error&&<p className="codex-key-warning" role="alert">{t(a.error)}</p>}
-        {!!a.shared?.length&&<p className="muted">{t('媒体键转换也会作用于本键盘上执行相同功能的按键或旋钮；关闭适配即可恢复。')}</p>}
-        <details className="product-details"><summary>{t('适配说明')}</summary>
-          {!isWindows&&<label>{t('关闭模式后')} <select aria-label={t('关闭模式后的功能')} value={state?.settings.codexKeycapFallback?'keycaps':'device'} onChange={e=>run(command({op:'settings',settings:{codexKeycapFallback:e.target.value==='keycaps'}}))}>
-            <option value="device">{t('键盘当前配置')}</option><option value="keycaps">{t('键帽上的原厂功能')}</option>
-          </select></label>}
-          {!isWindows&&<p>{t('键帽功能兼容用于 F13–F24 扩展层，需要保持 NuPhyLab 运行；退出应用后使用键盘自身配置。')}</p>}
-          {!isWindows&&<p>{t('原厂 F4 会临时切换为标准 F4，关闭模式或退出时恢复。意外拔线后，重新接回原 USB 接口即可恢复。')}</p>}
-          <p>{t(isWindows?(source==='claude'?'就绪表示快捷键注册通过检查；Claude Code 模式的命令都在本机执行。':'就绪表示快捷键注册通过检查；具体命令还取决于 Codex 当前页面与权限。'):(source==='claude'?'就绪表示键位配置和系统注册通过检查；Claude Code 模式的命令都在本机执行。':'就绪表示键位配置和系统注册通过检查；具体命令还取决于 Codex 当前页面与权限。'))}</p></details>
-        <div className="codex-setup-actions">
-          {enabled&&<Button kind="ghost" icon={<RotateCcw size={14}/>} busy={busy} onClick={()=>run(act('codexAdaptRestore'))}>{t('恢复原有按键')}</Button>}
-          <Button kind="primary" busy={busy} onClick={isWindows?()=>run(act('codexAdaptCheck')):enabled?()=>run(act('codexAdaptCheck')):begin}>{t(enabled||isWindows?'重新检查':'适配这把键盘')}</Button>
-        </div>
+    {open&&<Modal title={t('键盘设置')} width={560} className="agent-overlay-v6" initialFocus="title" onClose={()=>setOpen(false)} footer={<><Button kind="ghost" onClick={()=>setOpen(false)}>{t(complete?'完成':'稍后')}</Button><Button kind="primary" busy={busy} onClick={check}>{t(firmwareUpdate?'前往更新':connectionIssue||!connected?'重新连接':enabled?'重新检查':`开启 ${name} 模式`)}</Button></>}>
+      <div className="agent-setup-content-v6"><p className="agent-overlay-intro" role="status">{t(summary)}</p>
+        {row('键盘连接',connected,connected?`${model} · ${wireless?t('蓝牙'):'USB'}`:'使用支持数据传输的 USB 线。',!connected?<Button disabled={busy} onClick={()=>{void act('connect');}}>{t('连接键盘')}</Button>:<span className="agent-row-ready">{t('已连接')}</span>)}
+        {row('输入监控',inputReady,'接收所选按键与按键灯效。',permissionAction('inputMonitoring',input))}
+        {row('辅助功能',accessReady,'执行系统快捷操作。',permissionAction('accessibility',access))}
+        {firmwareUpdate?row('键盘固件',false,'前往 NuPhyIO 更新。'):row('绑定按键',complete,complete?'按实际绑定位置响应。':busy?'正在检查…':host?.suspended?'当前操作结束后恢复。':'连接并授权后继续。')}
+        {wireless&&<p className="agent-overlay-hint">{t('若按键仍在调节亮度或音量，请使用标准 F 键的 Fn 组合，或更改绑定。')}</p>}
+        {(error||a.error)&&<p className="agent-inline-error" role="alert">{t(error||friendlyConnectionError(a.error??''))}</p>}
+        <details className="agent-details-v6"><summary>{t('更多按键选项')}</summary>
+          <div className="agent-expanded-content-v6">
+          <label className="agent-option-v6"><span>{t('关闭模式后')}</span><select aria-label={t('关闭模式后的功能')} disabled={busy} value={state?.settings.codexKeycapFallback?'keycaps':'device'} onChange={e=>{const value=e.target.value==='keycaps';if(lock.current)return;lock.current=true;setBusy(true);setError('');void command({op:'settings',settings:{codexKeycapFallback:value}},{silent:true}).catch(failure=>setError(failure instanceof Error?failure.message:'未能确认保存结果，请重新检查。')).finally(()=>{lock.current=false;setBusy(false);});}}><option value="device">{t('键盘当前配置')}</option><option value="keycaps">{t('键帽上的原厂功能')}</option></select></label>
+          <p>{t('键帽功能兼容用于 F13–F24 扩展层，需要保持 NuPhy Lab 运行；退出应用后使用键盘自身配置。')}</p>
+          {!!a.shared?.length&&<p>{t('媒体键转换也会作用于本键盘上执行相同功能的按键或旋钮；关闭适配即可恢复。')}</p>}
+          </div>
+        </details>
       </div>
     </Modal>}
   </>;

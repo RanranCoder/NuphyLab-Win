@@ -1,3 +1,6 @@
+import type {AmbientLightingSettings,AmbientLightingState} from '../../shared/ambient-lighting.mjs';
+import {blank} from '../../shared/layout.mjs';
+import type {KeyboardModel} from '../../shared/layout.mjs';
 export type Key = {
   index: number;
   code: string;
@@ -20,10 +23,14 @@ export type Animation = {
   direction: Direction;
   speed: number;
   loop: boolean;
+  hueShift?: number;
+  colorOverride?: string;
+  brightness?: number;
   frames?: { colors: string[]; duration: number }[];
 };
 export type Scene = {
   id?: string;
+  modelId?: KeyboardModel;
   name: string;
   colors: string[];
   animation: Animation;
@@ -35,11 +42,15 @@ export type TriggerConfig = {
   code: string;
   count: number;
   intervalMs: number;
+  effect?: 'cross';
+  color?: string;
+  speed?: number;
 };
 export type TriggerState = {
   armed: boolean;
   flashing: boolean;
   completed: number;
+  activeWaves?: number;
   config: TriggerConfig;
   monitor: "global" | "window" | "off";
   warning?: string | null;
@@ -102,10 +113,24 @@ export type GameState = {
   serveRemainingMs?: number;
 };
 export type AppState = {
+  layout?: Key[];
   audio?: import("./AudioPanel").AudioState;
   bluetooth?: {connected:boolean;status:'connected'|'disconnected'|'ambiguous'|'unavailable';count:number;error:string|null};
+  ambientLighting?: AmbientLightingState;
   lightPower?: {sleeping:boolean;reason:"duration"|"idle"|null;remainingMs:number|null;idleMs:number;systemIdleAvailable:boolean|null};
+  connectionWake?: {active:boolean;status:string;elapsedMs:number;durationMs:number;sessionId:string|null};
   firmware?: {
+    modelId?: KeyboardModel | null;
+    modelName?: string;
+    minimumRequired?: string | null;
+    latestConfirmed?: boolean;
+    hasChecked?: boolean;
+    updateAvailable?: boolean;
+    updateRequired?: boolean;
+    upgradeRecommended?: boolean;
+    perKeyReady?: boolean;
+    functionKeysReady?: boolean;
+    firmwareDetectionAvailable?: boolean;
     status: "disconnected" | "checking" | "unavailable" | "unknown" | "updateAvailable" | "newer" | "current";
     current: string | null;
     latest: string | null;
@@ -115,11 +140,22 @@ export type AppState = {
     error: string | null;
     updateUrl: string;
     compatible: boolean;
-    verifiedVersion: string;
+    verifiedVersion: string | null;
   };
   device: {
+    keyRecovery?: {status:'none'|'active'|'confirmationRequired'|'blocked';errorCode?:string|null;error?:string|null;pending:boolean;blocking:boolean;requiresSameKeyboardConfirmation?:boolean;ownsCurrentHandle?:boolean;unownedHistory?:boolean};
+    unownedFunctionKeyHistory?:boolean;
     connected: boolean;
+    identified?: boolean;
+    firmwareDetectionAvailable?: boolean;
+    readOnly?: boolean;
+    connectionSessionId?: string;
+    connection?: {status:"ready"|"paused"|"waiting"|"reconnecting"|"attention"|"updateRequired";attempts:number};
     armed: boolean;
+    modelId?: KeyboardModel;
+    model?: string;
+    keyLedCount?: number;
+    capabilities?: {perKey?: boolean; stockEffects?: boolean; functionKeyAdaptation?: boolean; [key: string]: unknown};
     firmware?: string;
     ledCount?: number;
     error?: string | null;
@@ -134,7 +170,10 @@ export type AppState = {
   };
   colors: string[];
   scenes: Scene[];
+  previewColors?: string[];
   settings: {
+    ambientLighting?: AmbientLightingSettings;
+    airTopRightModule?: "rotary" | "keycap";
     brightness: number;
     codexEnabled: boolean;
     quotaSideEnabled: boolean;
@@ -172,7 +211,7 @@ export type AppState = {
   native?: Record<string, unknown>;
   [key: string]: unknown;
 };
-export type Command = (body: Record<string, unknown>) => Promise<unknown>;
+export type Command = (body: Record<string, unknown>, options?: {silent?:boolean}) => Promise<unknown>;
 export type Notify = (message: string, kind?: "error" | "success") => void;
 export const DEFAULT_ANIMATION: Animation = {
   effect: "static",
@@ -180,4 +219,4 @@ export const DEFAULT_ANIMATION: Animation = {
   speed: 4,
   loop: true,
 };
-export const blankColors = () => Array<string>(84).fill("#000000");
+export const blankColors = () => blank();

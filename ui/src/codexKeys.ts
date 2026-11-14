@@ -3,10 +3,12 @@ import type {AppState,Command,Notify} from './types';
 
 type NativeWindow = Window & {webkit?:{messageHandlers?:{codexKeys?:{postMessage:(value:unknown)=>Promise<unknown>}}}};
 export async function nativeCodexKeys(value:Record<string,unknown>) {
+  return (await nativeCodexRequest(value)).available;
+}
+export async function nativeCodexRequest(value:Record<string,unknown>):Promise<{available:boolean;result:unknown}> {
   const bridge=(window as NativeWindow).webkit?.messageHandlers?.codexKeys;
-  if(!bridge) return false;
-  await bridge.postMessage(value);
-  return true;
+  if(!bridge) return {available:false,result:null};
+  return {available:true,result:await bridge.postMessage(value)};
 }
 const editable = () => document.activeElement?.matches('input,textarea,select,[contenteditable="true"]') ?? false;
 export function useCodexKeys(state:AppState|null,command:Command,notify:Notify) {

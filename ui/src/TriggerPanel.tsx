@@ -1,13 +1,16 @@
+import { rangeStyle } from "./rangeStyle";
 import { t as tr } from "./i18n";
 import { useEffect, useRef, useState } from "react";
-import { Heart, Play, Power } from "lucide-react";
-import { DEFAULT_TRIGGER } from "../../shared/trigger.mjs";
-import type { HSV } from "../../shared/color.mjs";
+import { ArrowUpRight, Play } from "lucide-react";
+import { DEFAULT_TRIGGER, TYPING_KEYS, triggerPlaybackConfig } from "../../shared/trigger.mjs";
+import { TypingCross } from "../../shared/typing-cross.mjs";
 import { ColorWheel } from "./ColorWheel";
+import type { HSV } from "../../shared/color.mjs";
+import { applyArtworkAppearance } from "../../shared/render-animation.mjs";
 import { TriggerKeyRecorder } from "./TriggerKeyRecorder";
 import { Button, run } from "./primitives";
-import { DEFAULT_COLOR, heartColors } from "./presets";
 import type { AppState, Command, Key, Notify, Scene, TriggerConfig } from "./types";
+import './inline-overlays-v6.css';
 
 export function useTriggerKeys(state: AppState | null, command: Command) {
   const latest = useRef({ state, command });
@@ -19,9 +22,14 @@ export function useTriggerKeys(state: AppState | null, command: Command) {
       if (
         event.defaultPrevented || state?.playback.mode !== "trigger" ||
         !trigger?.armed || trigger.monitor !== "window" ||
-        event.code !== trigger.config.code || event.repeat ||
-        event.metaKey || event.ctrlKey || event.altKey || event.shiftKey
+        event.repeat
       ) return;
+      if(trigger.config.effect==='cross'){
+        const code=event.code==='F13'?'PrintScreen':event.code;
+        if(TYPING_KEYS.some(key=>key.code===code))run(command({op:'triggerKey',code}));
+        return;
+      }
+      if(event.code!==trigger.config.code||event.metaKey||event.ctrlKey||event.altKey||event.shiftKey)return;
       const target = event.target;
       if (target instanceof HTMLElement && (
         target.isContentEditable || target.closest(
@@ -36,7 +44,7 @@ export function useTriggerKeys(state: AppState | null, command: Command) {
 }
 
 export function TriggerPanel({
-  state, command, draft, setDraft, layout, notify, onColors,
+  state, command, draft, setDraft, layout, notify, onColors, onPreviewColors,
 }: {
   state: AppState | null;
   command: Command;
@@ -45,101 +53,95 @@ export function TriggerPanel({
   layout: Key[];
   notify: Notify;
   onColors: (colors: string[], history?: boolean) => void;
+  onPreviewColors?: (colors:string[]|null) => void;
 }) {
   const config = draft.trigger || DEFAULT_TRIGGER;
+  const cross=config.effect==='cross',effective=triggerPlaybackConfig(config,draft.animation);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const colorMemory=useRef<HSV|null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const trigger = state?.trigger;
   const armed = Boolean(trigger?.armed && state?.playback.mode === "trigger");
-  const [busy, setBusy] = useState(false);
-  const [color, setColor] = useState(
-    draft.colors.find((value) => value.toLowerCase() !== "#000000")?.toUpperCase() || DEFAULT_COLOR,
-  );
-  const [hex, setHex] = useState(color);
-  const colorMemory = useRef<HSV | null>(null);
-  const signature = draft.colors.join("").toLowerCase();
-  const emittedSignature = useRef(signature);
-  const mask = useRef(draft.colors.map((value, index) => value.toLowerCase() !== "#000000" ? index : -1).filter((index) => index >= 0));
-  if (signature !== emittedSignature.current) {
-    mask.current = draft.colors.map((value, index) => value.toLowerCase() !== "#000000" ? index : -1).filter((index) => index >= 0);
-    emittedSignature.current = signature;
-  }
-  useEffect(() => { setHex(color); }, [color]);
-  const setConfig = (patch: Partial<TriggerConfig>) =>
-    setDraft({ ...draft, trigger: { ...config, ...patch } });
-  const recolor = (next: string) => {
-    setColor(next);
-    const lit = new Set(mask.current);
-    const colors = draft.colors.map((value, index) => lit.has(index) ? next : value);
-    emittedSignature.current = colors.join("").toLowerCase();
-    onColors(colors, false);
+  const [busy, setBusy] = useState(false),[error,setError]=useState('');
+  const pending=useRef(false),previewFire=useRef<((code:string)=>void)|null>(null);
+  const setConfig = (patch: Partial<TriggerConfig>) => {
+    const current=draftRef.current,animation={...current.animation};
+    if(patch.color!==undefined)delete animation.colorOverride;
+    const next={...current,animation,trigger:{...(current.trigger||DEFAULT_TRIGGER),...patch}};
+    draftRef.current=next;setDraft(next);
   };
-  const applyHex = () => {
-    const next = hex.startsWith("#") ? hex : `#${hex}`;
-    if (/^#[0-9a-f]{6}$/i.test(next)) recolor(next.toUpperCase());
-    else { setHex(color); notify("颜色格式应为 #DC847B"); }
-  };
+  useEffect(()=>{
+    if(!cross||armed){previewFire.current=null;onPreviewColors?.(null);return;}
+    const engine=new TypingCross(layout),settings={color:effective.color,speed:effective.speed};
+    let frame:number|null=null,stopped=false;
+    const update=(now:number)=>{
+      if(stopped)return;
+      frame=null;onPreviewColors?.(engine.render(now,settings));
+      if(engine.activeWaves)frame=window.requestAnimationFrame(update);
+    };
+    previewFire.current=code=>{
+      if(!engine.fire(code,window.performance.now()))return;
+      if(frame===null)frame=window.requestAnimationFrame(update);
+    };
+    return()=>{stopped=true;previewFire.current=null;if(frame!==null)window.cancelAnimationFrame(frame);engine.clear();onPreviewColors?.(null);};
+  },[cross,armed,layout,effective.color,effective.speed,onPreviewColors]);
   const perform = async (body: Record<string, unknown>) => {
-    setBusy(true);
-    try { await command(body); }
-    finally { setBusy(false); }
+    if(pending.current)return;
+    pending.current=true;setBusy(true);setError('');
+    try { await command(body,{silent:true}); }
+    catch(error){setError(error instanceof Error?error.message:'操作未完成，请重试。');throw error;}
+    finally { pending.current=false;setBusy(false); }
   };
+  const hasPattern = cross ? effective.color?.toLowerCase()!=='#000000'
+    :applyArtworkAppearance(draft.colors,draft.animation).some(value=>value.toLowerCase()!=='#000000');
   const arm = async () => {
-    const settings = { ...config };
-    const colors = draft.colors.slice();
-    await perform({ op: "triggerArm", colors, trigger: settings });
-    setDraft({ ...draftRef.current, trigger: draftRef.current.trigger || settings });
+    if(!hasPattern){notify((draft.animation.brightness??100)===0?'作品亮度为 0%，调高亮度后可启用按键触发。':'当前设置下图案没有亮起的按键，请调整颜色或作品亮度。');return;}
+    const settings=triggerPlaybackConfig(config,draft.animation),colors=applyArtworkAppearance(draft.colors,draft.animation);
+    await perform({op:'triggerArm',colors,trigger:settings});
+    if(mounted.current)setDraft({...draftRef.current,trigger:draftRef.current.trigger||config});
   };
-  const hasPattern = draft.colors.some((value) => value.toLowerCase() !== "#000000");
-  return (
-    <aside className="inspector trigger-inspector">
-      <section className="trigger-color">
-        <div className="section-heading compact color-heading"><h3>{tr("图案颜色")}</h3><span>{tr("已亮按键一起换色")}</span></div>
-        <ColorWheel color={color} onChange={recolor} memory={colorMemory}
-          entry={
-            <div className="color-entry">
-              <span className="color-preview" style={{ background: color }} />
-              <input aria-label={tr("触发图案颜色")} value={hex} maxLength={7} onChange={(event) => setHex(event.target.value)} onBlur={applyHex}
-                onKeyDown={(event) => { if (event.key === "Enter") applyHex(); }} />
-              <Button kind="ghost" className="icon-button" title={tr("使用默认爱心")} aria-label={tr("使用默认爱心")} icon={<Heart size={16} />}
-                onClick={() => onColors(heartColors(layout, color))} />
-            </div>
-          }
-        />
+  const signature=(value:unknown)=>JSON.stringify(Object.entries((value??{}) as Record<string,unknown>).sort(([a],[b])=>a.localeCompare(b)));
+  const changed=cross&&armed&&signature(effective)!==signature(trigger?.config);
+  const testOnce=()=>{
+    if(cross&&!armed){previewFire.current?.('Space');return;}
+    return perform(cross?{op:'triggerFire',code:'Space'}:{op:'triggerFire'});
+  };
+  return <aside className="v5-properties v5-trigger-properties">
+    <h3>{tr("触发规则")}</h3>
+    {cross?<>
+      <p>{tr('按任意键，从对应位置向横纵扩散。')}</p>
+      <section className="v5-trigger-color"><h3>{tr('触发颜色')}</h3>
+        <ColorWheel color={config.color||'#ffffff'} memory={colorMemory} onChange={color=>setConfig({color:color.toLowerCase()})}/>
       </section>
-      <section className="trigger-settings">
-        <div className="section-heading compact"><h3>{tr("闪烁设置")}</h3></div>
-        <div className="trigger-fields">
-          <TriggerKeyRecorder value={config.code} onChange={(code) => setConfig({ code })} />
-          <label>{tr("闪烁次数")}<input aria-label={tr("闪烁次数")} type="number" min="1" max="20" value={config.count}
-              onChange={(event) => {
-                const value = Number(event.target.value);
-                if (Number.isInteger(value) && value >= 1 && value <= 20) setConfig({ count: value });
-              }} />
-          </label>
-        </div>
-        <label className="trigger-speed">{tr("闪烁速度")}<span>{tr(`每次 ${(config.intervalMs / 1000).toFixed(1)} 秒`)}</span>
-          <input className="range" aria-label={tr("闪烁速度")} type="range" min="200" max="2000" step="100" value={2200 - config.intervalMs}
-            onChange={(event) => setConfig({ intervalMs: 2200 - Number(event.target.value) })} />
-        </label>
-        <div className="trigger-speed-ends"><span>{tr("慢")}</span><span>{tr("快")}</span></div>
-      </section>
-      <section className="trigger-actions-panel">
-        <div className="section-heading compact"><h3>{tr("触发控制")}</h3></div>
-        <div className="trigger-actions">
-          <Button kind="primary" busy={busy} icon={<Power size={14} />} disabled={!state?.device.connected || state?.firmware?.compatible === false || !hasPattern}
-            onClick={() => run(arm())}>{tr(armed ? "应用设置" : "启用触发")}</Button>
-          {tr(armed && <Button busy={busy} onClick={() => run(perform({ op: "triggerStop" }))}>{tr("关闭触发")}</Button>)}
-          {tr(armed && <Button className="trigger-test" kind="ghost" busy={busy} icon={<Play size={13} />} disabled={trigger?.flashing}
-            onClick={() => run(perform({ op: "triggerFire" }))}>{tr("试闪一次")}</Button>)}
-        </div>
-        <p className="trigger-state-note" role="status">
-          {tr(armed ? trigger?.monitor === "global" ? "全局监听 · 按键仍正常输入" : "窗口内监听 · 点击图案后按键" : "启用后，平时保持熄灭。")}
-        </p>
-        <details className="trigger-help"><summary>{tr("配色与触发说明")}</summary><p>{tr("单键配色在「绘制」中设置。按键后闪烁，结束后熄灭；启用后修改需点击「应用设置」。")}</p></details>
-        {tr(trigger?.warning && <details className="trigger-warning"><summary>{tr("全局监听提示")}</summary><p>{tr(trigger.warning)}</p></details>)}
-        {tr(!hasPattern && <p className="trigger-warning">{tr("当前没有亮起的按键，先选一个图案。")}</p>)}
-      </section>
-    </aside>
-  );
+      <label className="v5-property-field v5-trigger-speed"><span>{tr('扩散速度')}<span>{config.speed??4}</span></span>
+        <input aria-label={tr('扩散速度')} type="range" min="1" max="10" step="1" value={config.speed??4} style={rangeStyle(config.speed??4,1,10)}
+          onChange={event=>{const speed=Number(event.target.value);if(Number.isFinite(speed)&&speed>=1&&speed<=10)setConfig({speed});}}/>
+      </label>
+      <p className="muted">{tr('连续按键独立叠加')}</p>
+      <label className="v5-trigger-preview"><textarea rows={3} style={{width:'100%',resize:'vertical'}} aria-label={tr('在此输入以预览灯效')} placeholder={tr('在此输入以预览灯效')}
+        onKeyDown={event=>{if(!event.repeat&&!armed)previewFire.current?.(event.code);}}/></label>
+      <p className="muted">{tr('预览输入仅用于触发灯效，不会保存文字。')}</p>
+    </>:<>
+      <section className="v5-trigger-key"><TriggerKeyRecorder value={config.code} onChange={code=>setConfig({code})}/></section>
+      <label className="v5-trigger-count"><span>{tr('闪烁次数')}</span><input aria-label={tr('闪烁次数')} type="number" min="1" max="20" value={config.count}
+        onChange={event=>{const value=Number(event.target.value);if(Number.isInteger(value)&&value>=1&&value<=20)setConfig({count:value});}}/></label>
+      <label className="v5-property-field v5-trigger-speed"><span>{tr('闪烁速度')}<span>{tr(`${(config.intervalMs/1000).toFixed(1)} 秒`)}</span></span>
+        <input aria-label={tr('闪烁速度')} type="range" min="200" max="2000" step="100" value={2200-config.intervalMs} style={rangeStyle(2200-config.intervalMs,200,2000)} onChange={event=>setConfig({intervalMs:2200-Number(event.target.value)})}/>
+      </label>
+    </>}
+    <div className="v5-trigger-listening"><span><i className="status-dot"/>{tr(armed?trigger?.monitor==='global'?'全局监听':'窗口内监听':'启用后开始监听')}</span>
+      <p>{tr(cross?'启用后在其他应用打字也会触发，按键照常输入。':armed&&trigger?.monitor!=='global'?'点击图案后按键。':'按键仍会正常输入。')}</p>
+    </div>
+    {changed&&<p className="inline-v6-notice">{tr('颜色和速度已修改，点击应用设置更新键盘。')}</p>}
+    <div className="v5-trigger-test">
+      {armed&&<Button busy={busy} disabled={!hasPattern} onClick={()=>run(arm())}>{tr('应用设置')}</Button>}
+      <Button kind="ghost" busy={busy} icon={<Play size={16}/>} disabled={cross?!hasPattern:!armed||trigger?.flashing} onClick={()=>{const result=testOnce();if(result)run(result);}}>{tr(cross?'试放一次':'试闪一次')}</Button>
+      {!cross&&!armed&&<span>{tr('启用后可试闪')}</span>}
+    </div>
+    {trigger?.warning&&<details className="trigger-warning inline-v6-details"><summary>{tr('全局监听提示')}</summary><div className="inline-v6-detail-body"><p>{tr(trigger.warning)}</p><p>{tr('按键仍会正常输入。')}</p>{armed&&trigger.monitor==='window'&&<p>{tr('点击图案后按键。')}</p>}<Button kind="ghost" icon={<ArrowUpRight size={14}/>} onClick={()=>window.dispatchEvent(new CustomEvent('nuphylab:navigate',{detail:'permissions'}))}>{tr('管理权限')}</Button></div></details>}
+    {error&&<div className="inline-v6-notice inline-v6-error" role="alert">{tr(error)}</div>}
+    {!hasPattern&&<p className="trigger-warning">{tr((draft.animation.brightness??100)===0?'作品亮度为 0%，调高亮度后可启用按键触发。':cross?'当前设置下图案没有亮起的按键，请调整颜色或作品亮度。':'当前没有亮起的按键，先选一个图案。')}</p>}
+  </aside>;
 }
