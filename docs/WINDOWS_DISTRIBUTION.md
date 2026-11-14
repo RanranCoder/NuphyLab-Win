@@ -23,6 +23,10 @@ npm run package:win
 
 包内 `signing.json` 记录版本、平台、签名身份与打包时间；server 把它透出为 `/api/state` 的 build 信息（与 macOS 同一机制）。
 
+## 版本线
+
+`package.json` 的 `version` 是 Windows 版本的唯一来源（exe VERSIONINFO、zip/setup.exe 文件名、signing.json 均由它派生）。Windows 移植从 macOS v1.0.11 基线起步后使用独立版本线：**v1.0.12（2026-11-14）为首个包含 Windows 修复批次（BUG_AUDIT 跨平台项 + cargo-win PATH 大小写修复）的版本**；macOS 主线的 v1.0.10/v1.0.11 修复记录见 `README.zh-CN.md`，不与 Windows 版本号互换。
+
 ## 代码签名（分发硬门槛）
 
 HID 访问 + 全局键盘钩子类程序未签名极易被 SmartScreen/杀软误报，对外分发必须 Authenticode 签名。`scripts/signing-win.mjs`：

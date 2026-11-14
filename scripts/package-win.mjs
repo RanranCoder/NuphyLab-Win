@@ -60,6 +60,19 @@ export async function findIscc({
     if (await probe(candidate)) return candidate;
   return null;
 }
+/** Builds the ISCC argument list. OutputBaseFilename must arrive without an
+ *  ".exe" suffix — ISCC appends the extension itself, and a doubled
+ *  "…-setup.exe.exe" is what the first real installer build produced. */
+export function isccArgs({ issFile, layout, output, version, installerFile }) {
+  return [
+    issFile,
+    `/DAppVersion=${version}`,
+    `/DSourceDir=${layout}`,
+    `/DOutputDir=${output}`,
+    `/DOutputFile=${path.basename(installerFile, ".exe")}`,
+    "/Qp",
+  ];
+}
 async function zipLayout(layout, zipFile) {
   // Compress-Archive keeps the directory structure; tar would need a flag
   // matrix across Windows builds for no gain here.
@@ -145,14 +158,13 @@ export async function packageWindows({
   let installerFile = null;
   if (installer) {
     installerFile = path.join(output, `NuPhyLab-win-x64-v${version}-setup.exe`);
-    await exec(installer, [
-      path.join(root, "scripts", "installer-win.iss"),
-      `/DAppVersion=${version}`,
-      `/DSourceDir=${layout}`,
-      `/DOutputDir=${output}`,
-      `/DOutputFile=${path.basename(installerFile)}`,
-      "/Qp",
-    ], { timeout: 300_000, maxBuffer: 1_048_576 });
+    await exec(installer, isccArgs({
+      issFile: path.join(root, "scripts", "installer-win.iss"),
+      layout,
+      output,
+      version,
+      installerFile,
+    }), { timeout: 300_000, maxBuffer: 1_048_576 });
   }
 
   return {

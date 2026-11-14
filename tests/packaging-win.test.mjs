@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdir,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {verifyLayout,LAYOUT_SPEC,findIscc} from '../scripts/package-win.mjs';
+import {verifyLayout,LAYOUT_SPEC,findIscc,isccArgs} from '../scripts/package-win.mjs';
 
 async function fakeLayout(dir) {
   for (const entry of LAYOUT_SPEC) {
@@ -32,6 +32,15 @@ test('the packaged layout is verified entry by entry before anything ships',asyn
  await writeFile(path.join(dir,'NuPhyLab.exe'),'');
  const empties=(await verifyLayout(dir)).sort();
  assert.deepEqual(empties,['NuPhyLab.exe 是空文件','runtime/node.exe 是空文件']);
+});
+test('the ISCC OutputFile directive carries no extension',()=>{
+ const output='D:\\out';
+ const installerFile=path.join(output,'NuPhyLab-win-x64-v1.0.12-setup.exe');
+ const args=isccArgs({issFile:'scripts/installer-win.iss',layout:'D:\\layout',output,version:'1.0.12',installerFile});
+ const define=(name)=>args.find((value)=>value.startsWith(`/D${name}=`))?.split('=').slice(1).join('=');
+ assert.equal(define('OutputFile'),'NuPhyLab-win-x64-v1.0.12-setup','ISCC appends .exe itself');
+ assert.equal(define('AppVersion'),'1.0.12');
+ assert.equal(define('OutputDir'),output);
 });
 test('the layout spec covers the files the shell and server resolve at runtime',()=>{
  const paths=LAYOUT_SPEC.map(entry=>entry.path);

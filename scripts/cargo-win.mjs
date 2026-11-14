@@ -38,10 +38,15 @@ const candidates = [
 const binutils = candidates.find((dir) => existsSync(join(dir, "dlltool.exe")) && existsSync(join(dir, "as.exe")));
 
 const env = { ...process.env };
+// The spread loses process.env's case-insensitive key behavior: on machines
+// where the variable is stored as `Path`, assigning `env.PATH` creates a
+// duplicate key and the spawned cargo fails to resolve (ENOENT). Reuse the
+// casing that is actually present.
+const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "Path";
 if (binutils) {
   // Order matters: rustc resolves plain `dlltool` from PATH, so the working
   // binutils must shadow the toolchain's broken self-contained copy.
-  env.PATH = `${binutils}${delimiter}${env.PATH || ""}`;
+  env[pathKey] = `${binutils}${delimiter}${env[pathKey] || ""}`;
   console.log(`cargo-win: using binutils from ${binutils}`);
 } else {
   console.log("cargo-win: no extra binutils found (relying on PATH, as CI does)");
