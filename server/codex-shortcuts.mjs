@@ -79,13 +79,23 @@ export class CodexKeyGestures {
     const hold=action.id==='dictation'&&shortcut.delivery!=='globalTap';
     if(action.id==='dictation')this.dictation={mode:hold?'hold':'toggle',accelerator:shortcut.accelerator};
     if(hold&&phase!=='down') throw new Error('听写需要按住命令键，松开后结束。');
-    const result=await this.send({...shortcut,phase:hold?'down':'tap',target:'com.openai.codex',activateTarget:true});
     if(hold) {
+      // Establish the hold before awaiting the reply: when the down reply is
+      // lost the physical keyUp must still send an up phase, otherwise the
+      // target keeps the modifier stuck until an unrelated flow releases it.
+      // The 120s failsafe timer bounds a hold whose keyUp never arrives.
       this.held={source,action:'dictation',startedAt:this.now()};
       this.timer=setTimeout(()=>{void this.release().catch(()=>{});},120000);
       this.timer.unref?.();
     }
-    return result;
+    try {
+      return await this.send({...shortcut,phase:hold?'down':'tap',target:'com.openai.codex',activateTarget:true});
+    } catch(error) {
+      if(!hold) throw error;
+      // The down may still have been delivered, so keep the hold and let the
+      // matching keyUp (or the failsafe) release it instead of swallowing it.
+      return {held:true,error:error.message};
+    }
   }
 }
 

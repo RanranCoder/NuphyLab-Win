@@ -162,6 +162,10 @@ export class ClaudeCodeAdapter {
   async readSpool() {
     const names = (await readdir(this.spoolDir))
       .filter((name) => name.endsWith(".jsonl") && /^[A-Za-z0-9_.:-]{1,80}\.jsonl$/.test(name))
+      // readdir order is filesystem-dependent; sort before truncating so a
+      // spool above MAX_FILES drops the same entries every pass instead of
+      // randomly flashing active sessions in and out of the slot list.
+      .sort()
       .slice(0, MAX_FILES);
     const sessions = new Map();
     for (const name of names) {

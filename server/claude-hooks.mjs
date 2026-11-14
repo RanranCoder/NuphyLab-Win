@@ -17,6 +17,17 @@ export const HOOK_MARKER = IS_WIN ? "nuphylab-claude-hook.mjs" : "nuphylab-claud
 export const HOOK_VERSION = 1;
 const MAX_BACKUPS = 10;
 const TIMEOUT_SECONDS = 5;
+// Script-name tokens of entries NuPhyLab installs (both launcher forms are
+// recognized so configs written by either platform stay repairable).
+const HOOK_SCRIPT_NAMES = ["nuphylab-claude-hook.mjs", "nuphylab-claude-hook.sh"]
+  .map((name) => name.replace(/\./g, "\\."))
+  .join("|");
+// The basename must appear as a whole path token (separator/quote/space before,
+// quote/space/end after), and a path-like argument must follow — a command
+// like `cat somewhere/nuphylab-claude-hook.sh` is a mention, not our hook.
+const OURS_PATTERN = new RegExp(
+  `(?:^|["'/\\\\\\s])(?:${HOOK_SCRIPT_NAMES})(?:$|["'\\s])\\s+(?:"[^"]*"|'[^']*'|~[^\s]*|[A-Za-z]:[^\s]*|/[^\s]*)`,
+);
 
 /** POSIX single-quote quoting, so Chinese characters and spaces stay intact. */
 export function shellQuote(value) {
@@ -31,8 +42,17 @@ export function hookCommand(hookDir, spoolDir, nodePath = process.execPath) {
   }
   return `${shellQuote(path.join(hookDir, HOOK_MARKER))} ${shellQuote(spoolDir)}`;
 }
-const isOurs = (entry) =>
-  entry && entry.type === "command" && typeof entry.command === "string" && entry.command.includes(HOOK_MARKER);
+const isOurs = (entry) => {
+  if (!entry || entry.type !== "command" || typeof entry.command !== "string") return false;
+  // Our entries invoke a hook script as a complete path token followed by a
+  // path argument (the spool directory): `<node> "<script>" "<spool>"` on
+  // Windows, `'<script>' '<spool>'` on POSIX. Recognizing the script name
+  // regardless of its directory keeps stale installs repairable, but a bare
+  // substring match also claimed third-party commands that merely mention the
+  // filename — those must never be merged or stripped, so an entry without the
+  // invocation shape (script token + following path argument) is not ours.
+  return OURS_PATTERN.test(entry.command);
+};
 
 export class ClaudeHookInstaller {
   constructor({ dataDir, claudeDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(homedir(), ".claude"), sourceDir = source } = {}) {

@@ -240,14 +240,21 @@ export class Hardware extends EventEmitter {
     try {
       await this.tail;
       if (this.child) {
-        try { await this.request("restoreKeys"); }
+        try {
+          await this.request("restoreKeys");
+          // The explicit final restoreKeys is authoritative: a stale
+          // keyRestoreFailed from an earlier attempt must not fail this exit.
+          this.keyRestoreFailure = null;
+        }
         catch (e) { failure = e; }
       }
       if (this.state.connected) await this.restore();
     } catch (e) {
       // The helper verifies its durable journal before accepting a deferred
-      // quit with no USB device. Real restore/verification failures still fail.
-      if (this.state.connected || !["DEVICE_NOT_FOUND", "NOT_CONNECTED", "DISCONNECTED"].includes(e.code)) failure = e;
+      // quit with no USB device. Real restore/verification failures still
+      // fail. Keep the first recorded failure instead of letting a later
+      // restore error overwrite the restoreKeys diagnosis.
+      if (this.state.connected || !["DEVICE_NOT_FOUND", "NOT_CONNECTED", "DISCONNECTED"].includes(e.code)) failure ??= e;
     } finally {
       if (this.child) {
         const child = this.child;

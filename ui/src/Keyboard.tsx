@@ -114,7 +114,8 @@ export function Keyboard({
                   onGameKey(key.index);
                 } else if (
                   onKey &&
-                  (event.key === " " || event.key === "Enter")
+                  (event.key === " " || event.key === "Enter") &&
+                  !event.repeat
                 ) {
                   event.preventDefault();
                   onStrokeStart?.();

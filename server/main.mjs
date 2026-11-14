@@ -4,7 +4,7 @@ import {startFrameLoop} from "./frame-loop.mjs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { readFile, stat, mkdir, writeFile } from "node:fs/promises";
+import { readFile, stat, mkdir, writeFile, rename } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { Store, validateColors, validateAnimation } from "./storage.mjs";
 import { Hardware } from "./hardware.mjs";
@@ -720,7 +720,12 @@ async function command(req) {
       else if (playback.mode === "game") {
         await activate();
         await output(game.render());
-      } else if (agentEnabled() && !["trigger","audio"].includes(playback.mode)) {
+      }
+      // Same branch order as the auto-reconnect path: a playing animation
+      // resumes after a manual reconnect instead of being silently handed to
+      // agent lighting. Trigger/audio sessions keep ownership of the lights.
+      else if (playback.playing && !["trigger","audio"].includes(playback.mode)) await activate();
+      else if (agentEnabled() && !["trigger","audio"].includes(playback.mode)) {
         await startAgentLighting();
       }
       return result;
@@ -791,11 +796,13 @@ async function command(req) {
     case "importScenes":
       return store.importScenes(req.scenes);
     case "settings": {
+      // Validate and persist first: invalid or null patches must not release
+      // held system shortcuts or stop an audio session as a side effect.
+      const old = store.data.settings;
+      const settings = await store.settings(req.settings);
       await codexGestures.release();
       codexPresses.reset();
-      const old = store.data.settings;
       if(audio.session && req.settings.audio && (req.settings.audio.source !== undefined && req.settings.audio.source!==old.audio.source || req.settings.audio.deviceId !== undefined && req.settings.audio.deviceId!==old.audio.deviceId)) await stop();
-      const settings = await store.settings(req.settings);
       codex.track?.([...(settings.slotIds ?? []),settings.codexWholeTaskId]);
       claude.track([...(settings.claudeSlotIds ?? []),settings.claudeWholeTaskId]);
       if (Object.keys(req.settings).some(key=>key.startsWith("codex") || key === "slotIds")) codexLights.wake();
@@ -1326,9 +1333,12 @@ server.once("listening", async () => {
     pid: process.pid,
     token,
   };
-  await writeFile(path.join(dataDir, "runtime.json"), JSON.stringify(info), {
-    mode: 0o600,
-  });
+  // Atomic write (tmp + rename) so a crash mid-write can never leave a
+  // truncated runtime.json holding the session token.
+  const runtimeFile = path.join(dataDir, "runtime.json");
+  const runtimeTmp = `${runtimeFile}.${process.pid}.tmp`;
+  await writeFile(runtimeTmp, JSON.stringify(info), { mode: 0o600 });
+  await rename(runtimeTmp, runtimeFile);
   console.log(
     JSON.stringify({ event: "ready", port: address.port, url: info.url }),
   );

@@ -175,6 +175,25 @@ test('a settings file that is not valid JSON is reported instead of overwritten'
  await assert.rejects(()=>w.installer.install(),/无法读取 Claude Code 配置文件/);
  assert.equal(await readFile(path.join(w.claudeDir,'settings.json'),'utf8'),'{ this is not json');
 });
+test('third-party commands that merely mention the hook filename are preserved',async t=>{
+ const w=await workspace(t,{settings:JSON.stringify({
+  hooks:{
+   Stop:[{hooks:[
+    {type:'command',command:`cat "${IS_WIN?'C:\\docs\\nuphylab-claude-hook.mjs':'/docs/nuphylab-claude-hook.sh'}"`},
+    {type:'command',command:'logger nuphylab-claude-hook.sh started'},
+   ]}],
+  },
+ })});
+ const installed=await w.installer.install();
+ assert.equal(installed.status,'installed');
+ assert.equal((await w.installer.status()).otherHooks,2,'mentions are not ours');
+ const removed=await w.installer.remove();
+ assert.equal(removed.removed,HOOK_EVENTS.length,'only our own entries are stripped');
+ const final=await w.read();
+ const stopCommands=final.hooks.Stop[0].hooks.map((hook)=>hook.command);
+ assert.ok(stopCommands.some((command)=>command.startsWith('cat ')),'mentioning command survives');
+ assert.ok(stopCommands.some((command)=>command.startsWith('logger ')),'mentioning command survives');
+});
 test('a stale command path is reported as needing repair and repaired by install',async t=>{
  const w=await workspace(t);
  await w.installer.install();
