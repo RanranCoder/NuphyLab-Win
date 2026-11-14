@@ -40,13 +40,14 @@ export async function appDraftFixture(options={}){
   const api={state,layout,serviceError:'',command,readState,refresh:async()=>{},exiting:false};
   const host={scrollTo(){},addEventListener(type,fn){if(!events.has(type))events.set(type,new Set());events.get(type).add(fn);},removeEventListener(type,fn){events.get(type)?.delete(fn);},dispatchEvent(e){events.get(e.type)?.forEach(fn=>fn(e));}};
   const jsx=(type,props,key)=>({type,props:props??{},key});
-  const sandbox={console:{log(){},warn(){},error(...x){errors.push(x);}},Error,DOMException,Date,JSON,Array,Set,Map,Promise,Number,String,Boolean,Math,Object,crypto:{randomUUID:()=>`fixture-uuid-${++uuid}`},window:host,localStorage,performance:{now:()=>0},requestAnimationFrame:fn=>{fn();return 1;},cancelAnimationFrame(){},CustomEvent:class{constructor(type,options={}){this.type=type;Object.assign(this,options);}}};
+  const sandbox={console:{log(){},warn(){},error(...x){errors.push(x);}},Error,DOMException,Date,JSON,Array,Set,Map,Promise,Number,String,Boolean,Math,Object,crypto:{randomUUID:()=>`fixture-uuid-${++uuid}`},document:{documentElement:{dataset:{}},getElementById:()=>null,addEventListener(){},removeEventListener(){}},window:host,localStorage,performance:{now:()=>0},requestAnimationFrame:fn=>{fn();return 1;},cancelAnimationFrame(){},CustomEvent:class{constructor(type,options={}){this.type=type;Object.assign(this,options);}}};
   const compile=(text,requireFn)=>{const exports={};vm.runInNewContext(ts.transpileModule(text,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{...sandbox,exports,require:requireFn});return exports;};
   const sharedImport=name=>name==='../../shared/layout.mjs'?layouts:name==='../../shared/keyboard-models.mjs'?keyboardModels:null;
   const types=compile(typesSource,name=>sharedImport(name)??(()=>{throw Error('Unexpected types import '+name);})());
   const persistence=compile(helperSource,name=>name==='./types'?types:name==='../../shared/trigger.mjs'?{validateTrigger}:sharedImport(name)??(()=>{throw Error('Unexpected persistence import '+name);})());
   const requireApp=name=>{
     if(name==='../../shared/preset-names.mjs')return presetNames;
+    if(name==='../../shared/appearance.mjs')return{APPEARANCES:['light','dark','system'],DEFAULT_APPEARANCE:'light',effectiveTheme:(appearance)=>appearance};
     if(sharedImport(name))return sharedImport(name);
     if(name==='react')return react;
     if(name==='react/jsx-runtime')return{jsx,jsxs:jsx,Fragment:Symbol.for('fixture.Fragment')};

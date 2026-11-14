@@ -8,6 +8,7 @@ import { readFile, stat, mkdir, writeFile, rename } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { Store, validateColors, validateAnimation } from "./storage.mjs";
 import { Hardware } from "./hardware.mjs";
+import {watchNativeParent} from './parent-lifetime.mjs';
 import {KeyAdaptation} from './key-adaptation.mjs';
 import {KeyCapture} from './key-capture.mjs';
 import {BluetoothInput} from './bluetooth-input.mjs';
@@ -796,6 +797,11 @@ async function command(req) {
     case "importScenes":
       return store.importScenes(req.scenes);
     case "settings": {
+      // Sidebar/visual preferences are persisted alone and must not release
+      // held system shortcuts or stop an audio session as a side effect.
+      if (req.settings && typeof req.settings === "object" && !Array.isArray(req.settings) &&
+          Object.keys(req.settings).length > 0 && Object.keys(req.settings).every(key => ["airTopRightModule", "sidebarFeatures"].includes(key)))
+        return store.settings(req.settings);
       // Validate and persist first: invalid or null patches must not release
       // held system shortcuts or stop an audio session as a side effect.
       const old = store.data.settings;
@@ -1398,3 +1404,6 @@ if (process.platform === "win32") {
     process.stdin.on("close", shutdown);
   }
 }
+// The Rust shell can die without SIGTERM (hard kill). Stop holding USB,
+// shortcuts and lighting once the recorded parent is no longer our parent.
+watchNativeParent({parentPid:process.env.AIR_STUDIO_PARENT_PID, onLost:() => { void shutdown(); }});

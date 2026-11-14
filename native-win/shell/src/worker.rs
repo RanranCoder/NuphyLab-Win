@@ -134,6 +134,9 @@ pub fn spawn(
         .env("AIR_STUDIO_UI", root.join("ui").join("dist"))
         .env("AIR_STUDIO_DATA", data_dir)
         .env("AIR_STUDIO_STDIN_EXIT", "1")
+        // parent-lifetime: a hard host kill (no SIGTERM, no stdin EOF) still
+        // releases the USB handle, held shortcuts and the RGB session.
+        .env("AIR_STUDIO_PARENT_PID", std::process::id().to_string())
         .env_remove("AIR_STUDIO_PORT")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

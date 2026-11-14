@@ -90,7 +90,7 @@ Mac 端 Claude/Codex 旧面板已重构为统一 Agent 面板（`ClaudeCode.tsx`
 
 | 批次 | 状态 | 提交 | 备注 |
 |---|---|---|---|
-| B1 基础同步 | 进行中（shared 层完成） | — | shared 新模块 29 个已拷贝；13 个同名 shared 已换 Mac 版；i18n 合并（Mac 1448 + Win 85 独有 key，修 1 重复 key）；audio-reactive 保留 Win screen 扩展并合入 Mac 2 处修复；presets/lighting-power/audio-reactive 测试已同步。剩余：server 通用模块、fake-service 合并（Mac +235 行，Win file:// 适配需保留）、UI 同名文件 30 个 |
+| B1 基础同步 | 进行中（shared+server 层完成） | ebcc14d | 第二批：8 个 server 模块 + fake-service 合并（保留 Win 5 处平台适配）+ 21 个新测试过。**UI 同名文件改判**：不能单独同步（Mac 版 App.tsx 依赖 FeatureCenter/Settings/UnifiedLibrary 等未拷组件与 main.mjs 新端点，单独换会构建失败），归入各功能批次：B2（App/Settings/侧栏）、B3（Agent/Codex）、B4（Library/Studio/music）、B5（Device/Keyboard）、B8（UpdatePreferences） |
 | B2 功能中心/设置 | 未开始 | — | |
 | B3 Agent/Codex | 未开始 | — | audio-reactive.test.mjs 中 1 个集成用例已 skip（依赖 Codex 任务状态灯新行为），B3 后恢复 |
 | B4 Music/统一库 | 未开始 | — | |
