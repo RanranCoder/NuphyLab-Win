@@ -1,3 +1,4 @@
+import {getKeyboardProfile,isKeyboardModel} from '../shared/keyboard-models.mjs';
 // Read the actual base layer before translating media functions. The mappings
 // are scoped macOS service properties. Factory F4 additionally uses a narrow,
 // journaled onboard lease because its generated Command+Space has no unique usage.
@@ -6,18 +7,33 @@ const keyboard = code => 0x700000000 + code;
 const consumer = usage => 0xc00000000 + usage;
 const sources = new Map([
   [105,keyboard(105)], [106,keyboard(106)],
-  // Verified in Air75 V3 firmware and its actual USB descriptor. F4 is a
+  // Verified factory codes in AIR75 V3 and Kick75. F4 is a
   // generated Command+Space chord and is handled by a separate narrow lease.
   [32262,consumer(0x29f)], [32264,consumer(0xcf)], [32278,0x10000009b],
   [172,consumer(0xb6)], [174,consumer(0xcd)], [171,consumer(0xb5)],
   [168,consumer(0xe2)], [170,consumer(0xea)], [169,consumer(0xe9)],
 ]);
 export function planKeyAdaptation(keymap, bindings) {
-  if (!keymap || !(keymap.protocol === 'air75-s4-keymap' && keymap.geometryVerified === true && keymap.readOnly === true || keymap.firmwareVersion === '1.0.16.6') || ![0,1].includes(keymap.mode) ||
-      !Array.isArray(keymap.active) || keymap.active.length !== 98 ||
+  const modelId=keymap?.modelId ?? 'air75-v3';
+  const profile=isKeyboardModel(modelId)?getKeyboardProfile(modelId):null;
+  const matrixCount = profile ? profile.rows*profile.columns : 0;
+  const keymapCount = matrixCount+(profile?.extraKeys ?? 0);
+  const protocol=modelId==='air75-v3'?'air75-s4-keymap':modelId+'-s4-keymap';
+  const verified = profile?.functionRow === true && keymap?.geometryVerified === true && keymap?.readOnly === true && keymap.protocol === protocol &&
+    (modelId==='air75-v3' || keymap.matrixKeyCount===matrixCount && keymap.keymapKeyCount===keymapCount);
+  // Preserve the original AIR helper contract without allowing its version
+  // string to override an explicit conflicting model or protocol.
+  const legacyAir = keymap?.protocol === undefined && keymap?.firmwareVersion === '1.0.16.6' &&
+    (keymap.modelId === undefined || keymap.modelId === 'air75-v3') &&
+    (keymap.geometryVerified === undefined || keymap.geometryVerified === true) &&
+    (keymap.readOnly === undefined || keymap.readOnly === true);
+  if (!keymap || !(verified || legacyAir) || ![0,1].includes(keymap.mode) ||
+      (keymap.matrixKeyCount !== undefined && keymap.matrixKeyCount !== matrixCount) ||
+      (keymap.keymapKeyCount !== undefined && keymap.keymapKeyCount !== keymapCount) ||
+      !Array.isArray(keymap.active) || keymap.active.length !== keymapCount ||
       keymap.active.some(n=>!Number.isInteger(n)||n<0||n>65535) ||
       !Array.isArray(keymap.defaults) || keymap.defaults.length!==2 ||
-      keymap.defaults.some(layer=>!Array.isArray(layer)||layer.length!==98||layer.some(n=>!Number.isInteger(n)||n<0||n>65535)) ||
+      keymap.defaults.some(layer=>!Array.isArray(layer)||layer.length!==keymapCount||layer.some(n=>!Number.isInteger(n)||n<0||n>65535)) ||
       !Number.isInteger(keymap.locationId)||keymap.locationId<=0)
     throw new Error('键位结构未通过检查，请更新 NuPhyLab 或在官方驱动中设置标准 F 键。');
   // Factory Windows F keys establish physical matrix positions independently
@@ -25,9 +41,13 @@ export function planKeyAdaptation(keymap, bindings) {
   const factory=keymap.defaults[1],mappings=[],ready=[],unsupported=[],shared=[];
   for(const code of bindings.filter(code=>/^F([1-9]|1[0-2])$/.test(code))) {
     const target=57+Number(code.slice(1)),position=factory.indexOf(target);
-    if(position<0 || factory.lastIndexOf(target)!==position || position>=96)
+    if(position<0 || factory.lastIndexOf(target)!==position || position>=matrixCount)
       throw new Error('无法确认功能键的位置，未修改系统映射。');
     const source=keymap.active[position];
+    const sharedSource=keymap.active.filter(value=>value===source).length>1;
+    // NODE gestures share media usages with F keys. Only a verified onboard
+    // function-row lease may separate them; never redirect the touch strip.
+    if(sharedSource && !['air75-v3','kick75'].includes(modelId)) {unsupported.push(code);shared.push(code);continue;}
     if(source===target){ready.push(code);continue;}
     // The keyboard's extended F13–F24 layer can be active over USB as well
     // as Bluetooth. Resolve it by physical matrix position, not by key name.
@@ -36,10 +56,10 @@ export function planKeyAdaptation(keymap, bindings) {
     if(!usage || mappings.some(row=>row.HIDKeyboardModifierMappingSrc===usage)) {unsupported.push(code);continue;}
     mappings.push({HIDKeyboardModifierMappingSrc:usage,HIDKeyboardModifierMappingDst:keyboard(target)});
     ready.push(code);
-    if(keymap.active.filter(value=>value===source).length>1) shared.push(code);
+    if(sharedSource) shared.push(code);
   }
   return {mappings,ready,unsupported,shared,locationId:keymap.locationId,mode:keymap.mode,
-    signature:JSON.stringify([keymap.mode,keymap.locationId,keymap.active,bindings])};
+    signature:JSON.stringify([keymap.protocol ?? 'legacy-air75',keymap.mode,keymap.locationId,keymap.active,bindings])};
 }
 
 // The observed extended Bluetooth layer reports physical F1/F2/F7 as
@@ -69,7 +89,7 @@ export function planKeycapFunctions(keymap) {
 export class KeyAdaptation {
   constructor(hardware,{now=Date.now}={}) {
     this.hardware=hardware;this.now=now;this.nextCheck=0;this.signature=null;
-    this.child=null;this.owned=false;this.boardOwned=false;this.recovered=false;
+    this.child=null;this.owned=false;this.boardOwned=false;this.boardKeys=[];this.recovered=false;
     this.value={status:'off',ready:[],unsupported:[],shared:[],error:null};
   }
   snapshot(){return {...this.value};}
@@ -79,17 +99,19 @@ export class KeyAdaptation {
       try {await this.hardware.request('restoreKeys');this.recovered=true;this.owned=false;}
       catch(error){errors.push(error.message);}
     }
-    if(restoreBoard && this.hardware.child && this.boardOwned) {
+    if (this.boardOwned && this.hardware.state.connected === false) this.boardOwned = false;
+    if(restoreBoard && this.hardware.child && this.boardOwned && this.hardware.state.readOnly !== true) {
       try {await this.hardware.request('restoreFunctionKey');this.boardOwned=false;}
       catch(error){errors.push(error.message);}
     }
     this.signature=null;
     if(errors.length)throw new Error(errors.join(' '));
-    this.value={...this.value,status,error:null};
+    this.value={status,ready:[],unsupported:[],shared:[],mapped:0,boardAdapted:[],keycapsMapped:false,error:null};
   }
-  async sync({enabled,active,connected,bindings,bluetooth=false,bluetoothIdentity='',keycapFallback=false},force=false) {
+  async sync({enabled,active,connected,bindings,bluetooth=false,bluetoothIdentity='',keycapFallback=false,hostPermissions=null},force=false) {
     if(this.child!==this.hardware.child) {this.child=this.hardware.child;this.recovered=false;this.signature=null;this.owned=false;this.boardOwned=false;this.nextCheck=0;}
-    const transport=connected?'usb':bluetooth?'bluetooth:'+bluetoothIdentity:'none';
+    connected = connected && this.hardware.state.readOnly !== true;
+    const transport=connected?'usb:'+(this.hardware.state.connectionSessionId??''):bluetooth?'bluetooth:'+bluetoothIdentity:'none';
     if(transport!==this.transport){this.transport=transport;this.nextCheck=0;}
     const keycaps=keycapFallback&&!active;
     const requested=JSON.stringify([bindings,keycaps]);
@@ -105,12 +127,26 @@ export class KeyAdaptation {
         await this.hardware.request('restoreKeys');this.recovered=true;
       }
       const wireless=bluetooth&&!connected;
-      const permissions=await this.hardware.request('permissions');
-      this.hardware.state.permissions=permissions;
+      const helperPermissions=await this.hardware.request('permissions');
+      this.hardware.state.permissions=helperPermissions;
+      const permissions=hostPermissions ? Object.fromEntries(['inputMonitoring','accessibility','canPostEvents'].map(key=>[key,helperPermissions[key]===true&&hostPermissions[key]===true])) : helperPermissions;
       let map=wireless ? null : await this.hardware.request('readKeymap');
+      if(map?.keyRecovery?.blocking===true && map.keyRecovery.ownsCurrentHandle===false && this.boardOwned) {
+        // A new USB handle cannot inherit the previous handle's onboard lease.
+        // Retire only our JS/OS translation ownership; the native durable F4
+        // record stays pending until an explicitly confirmed recovery.
+        await this.release('partial',false);
+        this.boardOwned=false;
+      }
+      // Validate the complete model/geometry before a narrow firmware lease;
+      // a malformed map must never trigger prepareFunctionKey as a probe.
+      const beforeLease=wireless ? null : planKeyAdaptation(map,bindings);
       const f4=map?.defaults?.[1]?.indexOf(61);
-      const leaseNeeded=!wireless&&!keycaps&&bindings.includes('F4')&&map?.mode===0&&f4>=0&&
-        (map.active?.[f4]===32263 || map.functionKeyLease===true);
+      const leaseSupported=map?.functionKeyLeaseSupported === true ||
+        (map?.functionKeyLeaseSupported === undefined && map?.protocol !== 'kick75-s4-keymap');
+      const sharedLease=!['air75-v3','kick75'].includes(map?.modelId??'air75-v3') && (beforeLease?.shared.length>0 || map?.functionKeyLease===true&&bindings.some(code=>/^F([1-9]|1[0-2])$/.test(code)));
+      const leaseNeeded=!wireless&&!keycaps&&leaseSupported&&map?.mode===0 &&
+        (sharedLease || bindings.includes('F4')&&f4>=0&&(map.active?.[f4]===32263 || map.functionKeyLease===true));
       if(!leaseNeeded && this.boardOwned) {
         await this.hardware.request('restoreFunctionKey');this.boardOwned=false;
         if(!wireless)map=await this.hardware.request('readKeymap');
@@ -121,9 +157,10 @@ export class KeyAdaptation {
         }
         // Keep recovery armed before issuing a mutation whose reply may be lost.
         this.boardOwned=true;
-        const result=await this.hardware.request('prepareFunctionKey');
+        const result=await this.hardware.request('prepareFunctionKey',{keys:bindings.filter(code=>/^F([1-9]|1[0-2])$/.test(code))});
         if(result.verified!==true)throw new Error('F4 配置未通过回读检查，原键位备份已保留。');
         this.boardOwned=result.leased===true;
+        this.boardKeys=this.boardOwned?(Array.isArray(result.keys)?result.keys:['F4']):[];
         map=await this.hardware.request('readKeymap');
       }
       const plan=wireless ? (keycaps ? {mappings:extendedKeycapMappings(),ready:[],unsupported:[],shared:[],profile:'keycaps',keycapsMapped:true,signature:JSON.stringify(['keycaps-bluetooth',bluetoothIdentity])} : planBluetoothKeys(bindings,bluetoothIdentity))
@@ -153,7 +190,7 @@ export class KeyAdaptation {
       }
       this.value={status:keycaps?'keycaps':plan.unsupported.length?'partial':'ready',ready:plan.ready,
         unsupported:plan.unsupported,shared:plan.shared,error:null,mode:plan.mode,
-        mapped:plan.mappings.length+(this.boardOwned?1:0),boardAdapted:this.boardOwned?['F4']:[],keycapsMapped:plan.keycapsMapped===true,transport:wireless?'bluetooth':'usb',checkedAt:this.now()};
+        mapped:plan.mappings.length+(this.boardOwned?this.boardKeys.length:0),boardAdapted:this.boardOwned?this.boardKeys:[],keycapsMapped:plan.keycapsMapped===true,transport:wireless?'bluetooth':'usb',checkedAt:this.now()};
     } catch(error) {
       let message=error.message;
       try {await this.release();} catch(restoreError) {message+=' '+restoreError.message;}

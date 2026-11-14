@@ -1,8 +1,16 @@
-export const FIRMWARE_URL = "https://drive.nuphy.io/?lang=zh-CN";
+import {KEYBOARD_MODELS} from '../shared/keyboard-models.mjs';
+export const FIRMWARE_URL = "https://drive.nuphyio.com/#/setting";
 export const FIRMWARE_API = "https://drive.nuphy.io/prod-api/api/nuphyIo/getLastFirmwareVersionsByType?businessId=1930212869851615233&type=1";
 // Hardware-tested version is distinct from protocol support and online latest.
 export const VERIFIED_FIRMWARE = "1.0.23.6";
-const BUSINESS_ID = "1930212869851615233";
+// Official model catalog: /prod-api/api/nuphyIo/keyBoardList. Kick75 IO
+// identifies 19f5:1026 with keyBoardId 1930094363885735938 (checked 2026-10-29).
+export const FIRMWARE_MODELS = Object.freeze(Object.fromEntries(Object.entries(KEYBOARD_MODELS).map(([id,p])=>[id,Object.freeze({businessId:p.businessId,modelName:id === "air75-v3" ? "AIR75 V3" : p.name,verifiedVersion:['air75-v3','kick75'].includes(id)?p.qualifiedFirmware:null,qualifiedVersion:p.qualifiedFirmware,minimumVersion:p.minimumVersion})])));
+const modelConfig = modelId => Object.hasOwn(FIRMWARE_MODELS, modelId) ? FIRMWARE_MODELS[modelId] : null;
+export const firmwareAPI = (modelId = "air75-v3") => {
+  const model = modelConfig(modelId);
+  return model ? `https://drive.nuphy.io/prod-api/api/nuphyIo/getLastFirmwareVersionsByType?businessId=${model.businessId}&type=1` : null;
+};
 const FRESH_MS = 6 * 60 * 60 * 1000;
 const RETRY_MS = 5 * 60 * 1000;
 
@@ -17,9 +25,9 @@ export function compareVersions(a, b) {
   for (let i = 0; i < 4; i++) if (left[i] !== right[i]) return Math.sign(left[i] - right[i]);
   return 0;
 }
-export function parseFirmwareManifest(value) {
-  const entry = value?.data;
-  if (value?.code !== 200 || !entry || entry.businessId !== BUSINESS_ID ||
+export function parseFirmwareManifest(value, modelId = "air75-v3") {
+  const entry = value?.data, model = modelConfig(modelId);
+  if (!model || value?.code !== 200 || !entry || entry.businessId !== model.businessId ||
       String(entry.type) !== "1" || entry.environment !== "prod" ||
       String(entry.status) !== "0" || !versionParts(entry.versionNumber))
     throw new Error("官方固件信息暂时无法确认");
@@ -29,22 +37,45 @@ export class FirmwareChecker {
   constructor({ fetchImpl = fetch, now = Date.now } = {}) {
     this.fetchImpl = fetchImpl;
     this.now = now;
-    this.latest = null;
-    this.checkedAt = null;
-    this.error = null;
-    this.pending = null;
-    this.retryAt = 0;
-    this.abort = null;
+    this.modelId = "air75-v3";
+    this.entries = new Map();
+  }
+  entry(modelId = this.modelId) {
+    if (!this.entries.has(modelId)) this.entries.set(modelId, {
+      latest: null, checkedAt: null, error: null, pending: null,
+      retryAt: 0, abort: null, request: null,
+    });
+    return this.entries.get(modelId);
+  }
+  setModel(modelId) {
+    const next = Object.hasOwn(FIRMWARE_MODELS, modelId) ? modelId : null;
+    if (next === this.modelId) return;
+    const previous = this.entry();
+    // Invalidate before abort: an ignored abort or a queued old response must
+    // never populate the new model, or clear a newer request after switching back.
+    previous.request = null;
+    previous.abort?.abort();
+    previous.abort = null;
+    previous.pending = null;
+    this.modelId = next;
   }
   refresh(force = false) {
-    if (this.pending) return this.pending;
-    if (!force && this.now() < this.retryAt) return Promise.resolve();
-    this.abort = new AbortController();
-    const timer = setTimeout(() => this.abort?.abort(), 8000);
-    this.pending = Promise.resolve().then(async () => {
+    const modelId = this.modelId, api = firmwareAPI(modelId), entry = this.entry();
+    if (!api) {
+      entry.error = "官方固件信息暂时无法确认";
+      return Promise.resolve();
+    }
+    if (entry.pending) return entry.pending;
+    if (!force && this.now() < entry.retryAt) return Promise.resolve();
+    const abort = new AbortController(), request = {};
+    entry.abort = abort;
+    entry.request = request;
+    const timer = setTimeout(() => abort.abort(), 8000);
+    entry.pending = Promise.resolve().then(async () => {
       try {
-        const response = await this.fetchImpl(FIRMWARE_API, {
-          signal: this.abort.signal, redirect: "error", headers: { Accept: "application/json" },
+        if (entry.request !== request) return;
+        const response = await this.fetchImpl(api, {
+          signal: abort.signal, redirect: "error", headers: { Accept: "application/json" },
         });
         if (!response.ok) throw new Error("官方服务暂时不可用");
         // Bound response size; never download firmware binaries or follow supplied URLs.
@@ -59,39 +90,81 @@ export class FirmwareChecker {
             chunks.push(value);
           }
         } finally { await reader.cancel().catch(() => {}); }
-        this.latest = parseFirmwareManifest(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-        this.checkedAt = this.now();
-        this.error = null;
-        this.retryAt = this.now() + FRESH_MS;
+        const latest = parseFirmwareManifest(JSON.parse(Buffer.concat(chunks).toString("utf8")), modelId);
+        if (entry.request !== request) return;
+        entry.latest = latest;
+        entry.checkedAt = this.now();
+        entry.error = null;
+        entry.retryAt = this.now() + FRESH_MS;
       } catch {
-        this.error = "暂时无法检查官方最新固件，请稍后重试。";
-        this.retryAt = this.now() + RETRY_MS;
+        if (entry.request !== request) return;
+        entry.error = "暂时无法检查官方最新固件，请稍后重试。";
+        entry.retryAt = this.now() + RETRY_MS;
       } finally {
         clearTimeout(timer);
-        this.abort = null;
-        this.pending = null;
+        if (entry.request === request) {
+          entry.abort = null;
+          entry.pending = null;
+          entry.request = null;
+        }
       }
     });
-    return this.pending;
+    return entry.pending;
   }
   snapshot(device) {
-    const current = versionParts(device.firmware) ? device.firmware : null;
-    const stale = this.checkedAt !== null && (Boolean(this.error) || this.now() - this.checkedAt >= FRESH_MS);
-    const comparison = compareVersions(current, this.latest?.version);
-    const status = !device.connected ? "disconnected"
-      : this.pending && !this.latest ? "checking"
-      : this.error || stale ? "unavailable"
-      : !this.latest ? "checking"
+    // The caller may deliver the newly identified device before setModel runs.
+    // Read only that model's cache, even during this transition.
+    const identifiedOnly = device.identified === true || device.firmwareDetectionAvailable === true;
+    // Explicit identification from a failed lighting handshake must carry its
+    // own model; do not attribute an unknown USB device to the previous model.
+    const modelId = device.modelId ?? (identifiedOnly ? null : this.modelId);
+    const model = modelConfig(modelId), entry = this.entry(modelId);
+    const current = versionParts(device.firmware) ? device.firmware
+      : versionParts(device.firmwareVersion) ? device.firmwareVersion : null;
+    // Reading USB/firmware identity can succeed before the LED protocol is
+    // validated. A legacy LED-count reply must not hide the way to upgrade.
+    // These explicit flags are cleared by Hardware on physical disconnect.
+    const canDetectFirmware = device.connected === true ||
+      (device.identified === true && device.firmwareDetectionAvailable === true);
+    const stale = entry.checkedAt !== null && (Boolean(entry.error) || this.now() - entry.checkedAt >= FRESH_MS);
+    const comparison = compareVersions(current, entry.latest?.version);
+    const hasChecked = entry.checkedAt !== null;
+    const latestConfirmed = Boolean(model && hasChecked && entry.latest && !entry.error && !stale);
+    const minimumRequired = model?.minimumVersion ?? null;
+    const latestSupported = latestConfirmed ? entry.latest.version === model?.qualifiedVersion : null;
+    // An old keyboard can lack the required protocol even when the official
+    // service is unreachable. Numeric version evidence can recommend an upgrade
+    // offline, but it must never grant per-key or function-key capabilities.
+    const updateRequired = Boolean(canDetectFirmware && model && compareVersions(current, minimumRequired) === -1);
+    const updateAvailable = Boolean(canDetectFirmware && latestConfirmed && comparison === -1);
+    const perKeyReady = Boolean(device.connected && model && current && !updateRequired && device.capabilities?.perKey === true);
+    const functionKeysReady = Boolean(device.connected && model && current && !updateRequired && device.capabilities?.functionKeyAdaptation === true);
+    const status = !canDetectFirmware ? "disconnected"
+      : !model ? "unavailable"
+      : entry.pending && !entry.latest ? "checking"
+      : entry.error || stale ? "unavailable"
+      : !entry.latest ? "checking"
       : comparison === null ? "unknown"
       : comparison < 0 ? "updateAvailable"
       : comparison > 0 ? "newer" : "current";
-    return { status, current, latest: this.latest?.version ?? null,
-      checkedAt: this.checkedAt, checking: Boolean(this.pending), stale,
-      error: this.error, updateUrl: FIRMWARE_URL,
-      compatible: Boolean(device.connected && device.capabilities?.perKey === true),
+    return { status, modelId, modelName: model?.modelName ?? null, current, latest: entry.latest?.version ?? null,
+      checkedAt: entry.checkedAt, hasChecked, latestConfirmed, checking: Boolean(entry.pending), stale,
+      minimumRequired, updateRequired, updateAvailable,
+      upgradeRecommended: updateRequired || (updateAvailable && latestSupported !== false),
+      latestSupported,qualifiedVersion:model?.qualifiedVersion ?? null,
+      firmwareDetectionAvailable: Boolean(canDetectFirmware && model && current),
+      error: entry.error, updateUrl: FIRMWARE_URL,
+      compatible: perKeyReady, perKeyReady, functionKeysReady,
       protocol: device.capabilities?.protocol ?? null,
       stateBytes: device.capabilities?.stateBytes ?? null,
-      verifiedVersion: VERIFIED_FIRMWARE };
+      verifiedVersion: model?.verifiedVersion ?? null };
   }
-  close() { this.abort?.abort(); }
+  close() {
+    for (const entry of this.entries.values()) {
+      entry.request = null;
+      entry.abort?.abort();
+      entry.abort = null;
+      entry.pending = null;
+    }
+  }
 }

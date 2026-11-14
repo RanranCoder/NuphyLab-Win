@@ -1,7 +1,8 @@
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { LED_COUNT, defaultAnimation } from "../shared/layout.mjs";
+import { getCanvasCount,isKeyboardModel } from "../shared/keyboard-models.mjs";
+import { getLayoutModel, defaultAnimation } from "../shared/layout.mjs";
 import { GAME_TYPES, validateGameType } from "../shared/games.mjs";
 import { validateTrigger } from "../shared/trigger.mjs";
 import { validateStatusColors } from "../shared/codex-lighting.mjs";
@@ -10,16 +11,17 @@ import {DEFAULT_SIDEBAR_FEATURES,validateSidebarFeatures} from '../shared/sideba
 import {migrateSidebarFeatures} from './sidebar-migration.mjs';
 import {DEFAULT_AMBIENT_LIGHTING,validateAmbientLighting} from '../shared/ambient-lighting.mjs';
 import { validateOutputColorProfile } from "../shared/output-color-profile.mjs";
-export function validateColors(colors) {
+export function validateColors(colors, modelId=getLayoutModel()) {
+  const count=getCanvasCount(modelId);
   if (
     !Array.isArray(colors) ||
-    colors.length !== LED_COUNT ||
+    colors.length !== count ||
     colors.some((c) => typeof c !== "string" || !/^#[0-9a-f]{6}$/i.test(c))
   )
-    throw new Error("颜色数据必须包含 84 个有效的 RGB 颜色");
+    throw new Error(`颜色数据必须包含 ${count} 个有效的 RGB 颜色`);
   return colors.map((c) => c.toLowerCase());
 }
-export function validateAnimation(a = {}, { legacy = false } = {}) {
+export function validateAnimation(a = {}, { legacy = false, modelId=getLayoutModel() } = {}) {
   if (!a || typeof a !== "object" || Array.isArray(a))
     throw new Error("动画格式无效");
   const out = { ...defaultAnimation };
@@ -44,6 +46,21 @@ export function validateAnimation(a = {}, { legacy = false } = {}) {
     if (typeof a.loop !== "boolean") throw new Error("循环设置无效");
     out.loop = a.loop;
   }
+  if (a.hueShift !== undefined) {
+    if (!Number.isFinite(a.hueShift) || a.hueShift < -180 || a.hueShift > 180)
+      throw new Error("色相偏移应在 -180–180 度之间");
+    out.hueShift = a.hueShift;
+  }
+  if (a.colorOverride !== undefined) {
+    if (typeof a.colorOverride !== "string" || !/^#[a-f0-9]{6}$/i.test(a.colorOverride))
+      throw new Error("整体颜色必须是有效的 RGB 颜色");
+    out.colorOverride = a.colorOverride.toLowerCase();
+  }
+  if (a.brightness !== undefined) {
+    if (!Number.isFinite(a.brightness) || a.brightness < 0 || a.brightness > 100)
+      throw new Error("作品亮度应在 0–100 之间");
+    out.brightness = a.brightness;
+  }
   if (a.frames !== undefined) {
     if (!Array.isArray(a.frames) || a.frames.length > 120)
       throw new Error("最多保存 120 帧");
@@ -56,7 +73,7 @@ export function validateAnimation(a = {}, { legacy = false } = {}) {
       )
         throw new Error("每帧时长应为 80–10000 毫秒");
       return {
-        colors: validateColors(f.colors),
+        colors: validateColors(f.colors,modelId),
         duration: Math.round(f.duration),
       };
     });
@@ -79,11 +96,14 @@ export function validateScene(scene, now = new Date().toISOString()) {
     (typeof scene.id !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(scene.id))
   )
     throw new Error("作品 ID 无效");
+  if (scene.modelId !== undefined && !isKeyboardModel(scene.modelId))
+    throw new Error("作品键盘型号无效");
   return {
     id: scene.id ?? randomUUID(),
     name: scene.name.trim(),
-    colors: validateColors(scene.colors),
-    animation: validateAnimation(scene.animation, { legacy: true }),
+    ...(scene.modelId ? { modelId: scene.modelId } : {}),
+    colors: validateColors(scene.colors,scene.modelId ?? "air75-v3"),
+    animation: validateAnimation(scene.animation, { legacy: true,modelId:scene.modelId ?? "air75-v3" }),
     ...(scene.trigger !== undefined ? { trigger: validateTrigger(scene.trigger) } : {}),
     createdAt:
       typeof scene.createdAt === "string" &&
@@ -305,6 +325,8 @@ export class Store {
       scenes = [...this.data.scenes];
     const i = scenes.findIndex((s) => s.id === entry.id);
     if (i >= 0) {
+      if ((scenes[i].modelId ?? "air75-v3") !== (entry.modelId ?? "air75-v3"))
+        throw new Error("不能用另一型号的作品覆盖原作品，请另存为新作品。");
       entry.createdAt = scenes[i].createdAt;
       scenes[i] = entry;
     } else {

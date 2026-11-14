@@ -96,7 +96,7 @@ test("Whack handles large time steps identically to small steps and excludes unm
   const keys = [
     { code: "KeyA", index: 0 },
     { code: "KeyB", index: 1 },
-    { code: "KeyC", index: 83 },
+    { code: "KeyC", index: 83, controllable:false },
     { code: "KeyD", index: 2, controllable: false },
   ];
   const a = new WhackGame(() => 1, keys);
@@ -262,5 +262,5 @@ test("Memory snapshots cannot mutate pads, timing is deterministic, and index 83
   const before = b.snapshot();
   for (const invalid of [-1, NaN, Infinity, undefined]) b.tick(invalid);
   assert.deepEqual(b.snapshot(), before);
-  assert.throws(() => new MemoryGame(() => 0, layout.map((key) => key.code === "KeyA" ? { ...key, index: 83 } : key)), /controllable KeyA/);
+  assert.throws(() => new MemoryGame(() => 0, layout.map((key) => key.code === "KeyA" ? { ...key, index: 83, controllable:false } : key)), /controllable KeyA/);
 });

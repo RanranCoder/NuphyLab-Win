@@ -343,10 +343,7 @@ function codexKeysState() {
     held:codexGestures.held,dictation:codexGestures.dictation,gestureTrace:[...keyGestureTrace],taskOpenTrace:[...taskOpenTrace]};
 }
 function syncKeyAdaptation(force=false) {
-  // Windows v1 does not port the macOS key-remap layer (UserKeyMapping has no
-  // equivalent and the bridge rejects adaptKeys), so it stays fully off there.
-  const supported=process.platform!=="win32";
-  return keyAdaptation.sync({enabled:supported&&!driverHandoff && (bluetoothOnly() || hardware.state.capabilities?.functionKeyAdaptation !== false) && (keyCapture.active || store.data.settings.codexKeyAdaptation || store.data.settings.codexKeycapFallback),
+  return keyAdaptation.sync({enabled:!driverHandoff && (bluetoothOnly() || hardware.state.capabilities?.functionKeyAdaptation !== false) && (keyCapture.active || store.data.settings.codexKeyAdaptation || store.data.settings.codexKeycapFallback),
     keycapFallback:store.data.settings.codexKeycapFallback,
     active:keyCapture.active || (codexKeysState().enabled && codexKeysState().host?.suspended!==true),
     connected:hardware.state.connected && !explicitDisconnect,
@@ -852,9 +849,7 @@ async function setAgentMode(source, enabled, {repairEmptyCustom = false} = {}) {
   codexSetupRevision++;
   if (enabled) await refreshBluetooth(true);
   const settings={agentSource:source,codexEnabled:enabled && source === 'codex',claudeEnabled:enabled && source === 'claude',
-    // Windows v1 has no key-remap layer: enabling an integration never turns
-    // the adaptation setting on there (see syncKeyAdaptation's supported gate).
-    codexKeyAdaptation:enabled && process.platform !== 'win32',
+    codexKeyAdaptation:enabled,
     ...(repairEmptyCustom && enabled && source === 'codex' && store.data.settings.codexTaskSource === 'custom' && !store.data.settings.slotIds?.some(Boolean)
       ? {codexTaskSource:'recent'} : {})};
   const changed=Object.entries(settings).some(([key,value])=>store.data.settings[key]!==value);

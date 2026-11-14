@@ -1,4 +1,5 @@
-import { blank, layout, LED_COUNT } from "../../shared/layout.mjs";
+import {canvasCountForLayout} from '../../shared/keyboard-models.mjs';
+import { blank, layout } from "../../shared/layout.mjs";
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const LEFT_COLOR = "#82b89a";
@@ -13,19 +14,19 @@ const STEP_MS = 8;
 export class PongGame {
   constructor(random = Math.random, keys = layout) {
     this.random = random;
+    this.canvasCount = canvasCountForLayout(keys.filter(key=>key.controllable!==false));
     this.type = "pong";
     this.keys = keys.filter(
       (key) =>
         key.controllable !== false &&
         Number.isInteger(key.index) &&
         key.index >= 0 &&
-        key.index < LED_COUNT - 1 &&
         Number.isFinite(key.x) &&
         Number.isFinite(key.y) &&
         Number.isFinite(key.w) &&
         key.w > 0,
     );
-    this.rows = Array.from({ length: 6 }, (_, y) =>
+    this.rows = [...new Set(this.keys.map(key => key.y))].sort((a,b) => a-b).map(y =>
       this.keys.filter((key) => key.y === y).sort((a, b) => a.x - b.x),
     );
     this.status = "idle";
@@ -188,7 +189,7 @@ export class PongGame {
   }
 
   render() {
-    const colors = blank();
+    const colors = Array(this.canvasCount).fill("#000000");
     if (this.status === "idle") return colors;
     for (const side of ["left", "right"]) {
       const top = this.paddleTop(side);
