@@ -99,7 +99,19 @@ Mac 端 Claude/Codex 旧面板已重构为统一 Agent 面板（`ClaudeCode.tsx`
 | B6 Typing Sounds | 完成 | feb459a | HIDBridge typing.rs（钩子/rodio/DSP/catalog 校验/6 op）；壳 shim 扩展 payload reply + /api/typing 转发；server 端点 + pause 协调；641 音效资源；cargo test 26 过、self-test 6115、npm test 766/749/0/17 |
 | B7 框选/拖拽/口袋 | 完成 | b798ea7 + f2024c5 + a46aa8c | Pocket ~4200 行 16/16 op；DragConvert ~3900 行（IDropTarget 环形菜单、13 动作可用、pdfium/ffmpeg 降级）；Smart Selection server 1152 行（三协议 AI+SSE+key 隔离）+ 壳 2435 行（框选浮层/DXGI 区域截图/回答浮窗）。cargo test 119 过、npm test 784/767/0/17。降级：语音/OCR 未实现、Fn 不可检测、WebP 有损 |
 | B7 框选/拖拽/口袋 | 未开始 | — | 最大批次，原生套件 |
-| B8 更新器 | 进行中 | — | 方案：壳内 updater 模块（feed 解析 → ed25519-dalek+SHA-256 校验 → 下载 setup.exe → Inno /VERYSILENT /RESTARTAPPLICATIONS 静默升级）；scripts/prepare-appcast-win.mjs（node:crypto ed25519 签名，零依赖）；feed 默认 GitHub Releases latest；bridge appUpdate + About 页状态行；端到端本地模拟（校验篡改拒绝） |
+| B8 更新器 | 完成 | 99a80e2 | 壳 updater（feed/Ed25519+SHA-256/状态机/Inno 静默升级+breakaway）、prepare-appcast-win.mjs（node:crypto 签名）、About 页应用更新面板；端到端 8 项 PASS（含篡改拒绝）；cargo 138 过、npm 784/767/0/17 |
+
+## 五、同步完成（B1–B8 全部收口）
+
+12 个提交：ff88098、ebcc14d、686c8bb、5cf19c6、0a3cfe4、bd5457c、0b145e2、49c1c60、feb459a、b798ea7、f2024c5、a46aa8c、99a80e2。
+最终验证：npm test 784/767/0/17（起点 363/352/0/11，净增 421 项）；cargo test 138 过；ui build 过；各功能 QA 入口真实执行通过。
+
+**发布前待办（非同步范围）**：
+1. 版本号决策：当前 1.0.12；可选升级对齐 1.2.47（三处：package.json、shell/Cargo.toml、打包 signing.json 自动写）。
+2. `node scripts/prepare-appcast-win.mjs --generate-key` 生成签名密钥对，公钥内嵌 updater/crypto.rs，私钥存发布机环境变量。
+3. 真证书代码签名（当前产物 ad-hoc 未签名，不得对外分发）+ 真机安装一次真实 setup.exe 验证更新器安装路径。
+4. 真机验收闭环（阶段 B）：键盘实机联调、RELEASE_QA 文档。
+5. 降级清单回顾（各批次提交信息）：语音/OCR、HEIC、WebP 有损、pdfium/ffmpeg 依赖、Fn 检测、多屏选区钳制。
 
 ## 五、B1 执行记录（2026-11-14）
 
