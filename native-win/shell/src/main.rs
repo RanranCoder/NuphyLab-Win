@@ -14,6 +14,7 @@ mod power;
 mod selection;
 mod theme;
 mod traymenu;
+mod updater;
 mod webview;
 mod win;
 mod worker;
@@ -63,6 +64,12 @@ pub enum UserEvent {
     SelectionDelta { generation: u64, text: String },
     SelectionDone { generation: u64, ok: bool, text: String },
     SelectionRecordTimeout { session: String },
+    /// Updater state changed (worker thread → UI thread): pushes the fresh
+    /// status snapshot into the page as a `nuphylab:app-update` event.
+    UpdateChanged,
+    /// The installer is verified and staged: run the graceful-quit chain and
+    /// hand over to Inno Setup after the worker exits.
+    UpdateInstallReady { setup: String },
 }
 
 #[derive(Default)]
@@ -366,6 +373,14 @@ fn main() {
         let code = selection::run_selection_qa(&data_dir);
         std::process::exit(code);
     }
+    // In-app updater QA: check → download → verify against a local fixture
+    // server plus the tamper/replay negative cases (scripts/qa-updater-win.mjs
+    // drives it). The installer step is a dry run — nothing is really
+    // installed.
+    if std::env::var("AIR_STUDIO_UPDATE_QA").ok().as_deref() == Some("1") {
+        let code = updater::run_update_qa(&data_dir);
+        std::process::exit(code);
+    }
     // Diagnostics entry point (QA / field support): duplicate the primary
     // display for a few seconds, write the zone grid next to the logs and exit.
     // Verifies the exact code path the screen-ambient source uses.
@@ -472,6 +487,9 @@ fn main() {
     let mut selection_overlay = selection::overlay::Overlay::create(&event_loop);
     let mut selection_panel = selection::panel::Panel::create(&event_loop, selection_handle.sender());
 
+    // In-app updater: bridge worker only; it never touches hooks or the server.
+    let (updater_handle, updater_core) = updater::spawn(&data_dir, log.clone(), proxy.clone());
+
     let mut tray = match tray_icon {
         Some(icon) => {
             let exe = autostart::current_exe_path().unwrap_or_default();
@@ -523,6 +541,9 @@ fn main() {
 
     let webview_slot: Rc<RefCell<Option<WebView>>> = Rc::new(RefCell::new(None));
     let devtools = std::env::var("AIR_STUDIO_DEVTOOLS").ok().as_deref() == Some("1");
+    // Verified installer waiting for the graceful-quit chain to finish before
+    // it is launched outside the shell's job object.
+    let mut pending_setup: Option<String> = None;
 
     let mut last_normal = saved_bounds.filter(|b| !b.maximized);
     let mut last_bounds_write = Instant::now();
@@ -543,7 +564,7 @@ fn main() {
                 drag_hook.start(&drag_core);
                 selection_handle.send(selection::Op::ServerReady { base: url.clone(), token: state.lock().unwrap().token.clone() });
                 selection_hook.start(selection_handle.sender());
-                match webview::build(&window, &url, hotkeys.clone(), state.clone(), proxy.clone(), log.clone(), webview_slot.clone(), pocket_handle.clone(), drag_handle.clone(), selection_handle.clone()) {
+                match webview::build(&window, &url, hotkeys.clone(), state.clone(), proxy.clone(), log.clone(), webview_slot.clone(), pocket_handle.clone(), drag_handle.clone(), selection_handle.clone(), updater_handle.clone()) {
                     Ok(webview) => {
                         if devtools {
                             webview.open_devtools();
@@ -554,6 +575,14 @@ fn main() {
                         let _ = webview.evaluate_script(&theme::apply_script(&current));
                         *webview_slot.borrow_mut() = Some(webview);
                         start_poll(state.clone(), hotkeys.clone(), log.clone(), proxy.clone());
+                        // One silent update check, 10 minutes after launch
+                        // (AIR_STUDIO_NO_UPDATE_CHECK=1 turns it off inside
+                        // the updater worker).
+                        let auto_handle = updater_handle.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(updater::AUTO_CHECK_DELAY);
+                            auto_handle.send(updater::Op::AutoCheck);
+                        });
                     }
                     Err(error) => {
                         log.append(format!("WebView build failed: {}\n", error).as_bytes());                        let t = |zh: &'static str, en: &'static str| -> &'static str { if english { en } else { zh } };
@@ -649,6 +678,25 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                     let _ = webview.evaluate_script(&script);
                 }
             }
+            Event::UserEvent(UserEvent::UpdateChanged) => {
+                // Push the fresh updater status into the page; the Settings →
+                // About panel listens for `nuphylab:app-update` events.
+                if let Some(webview) = webview_slot.borrow().as_ref() {
+                    let status = updater::status_snapshot(&updater_core);
+                    let script = format!(
+                        "window.dispatchEvent(new CustomEvent('nuphylab:app-update',{{detail:{status}}}));"
+                    );
+                    let _ = webview.evaluate_script(&script);
+                }
+            }
+            Event::UserEvent(UserEvent::UpdateInstallReady { setup }) => {
+                // Stage the installer, then run the graceful-quit chain: the
+                // server restores the keyboard first, the worker exits, and
+                // only then does the shell hand over to Inno Setup.
+                pending_setup = Some(setup);
+                log.append(format!("[updater] installer verified and staged; beginning graceful exit\n").as_bytes());
+                begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &mut drag_hook, &mut selection_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy);
+            }
             Event::UserEvent(UserEvent::PowerChanged { sleeping }) => {
                 // AppHost.willSleep parity: stop capture before the machine
                 // suspends; after resume the /api/state poll restarts it.
@@ -703,6 +751,16 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                 worker_slot.lock().unwrap().take();
                 let terminating = state.lock().unwrap().terminating;
                 if terminating {
+                    // Update install: the worker (and its restore chain) is
+                    // done — launch the staged installer outside our job
+                    // object and exit. The Inno flags close/restart the app.
+                    if let Some(setup) = pending_setup.take() {
+                        let path = std::path::PathBuf::from(&setup);
+                        match updater::launch_installer(&path) {
+                            Ok(()) => log.append(b"[updater] installer launched; exiting shell\n"),
+                            Err(error) => log.append(format!("[updater] installer launch failed: {error}\n").as_bytes()),
+                        }
+                    }
                     let english_now = state.lock().unwrap().english;
                     if code != Some(0) {
                         show_worker_exit_dialog(&data_dir, &log_path, english_now, true);

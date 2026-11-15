@@ -1,6 +1,9 @@
 [package]
 name = "shell"
-version = "0.1.0"
+# Kept in lockstep with the root package.json version (the Windows appcast and
+# the installer AppVersion come from there); env!("CARGO_PKG_VERSION") is the
+# shell's own build version reported to the in-app updater.
+version = "1.0.12"
 edition = "2021"
 build = "build.rs"
 
@@ -31,7 +34,13 @@ raw-window-handle = "0.6"
 rustfft = "6"
 num-complex = "0.4"
 wasapi = "0.15"
-ureq = { version = "2", default-features = false }
+# Local-server HTTP used "tls"-free so far; the updater needs real HTTPS for
+# the GitHub-hosted appcast and setup downloads (rustls backend, pure Rust).
+ureq = { version = "2", default-features = false, features = ["tls"] }
+# In-app updater: Ed25519 feed signatures (Sparkle-style, pure Rust) and the
+# matching SHA-256 download digest.
+ed25519-dalek = { version = "2", default-features = false, features = ["fast", "std"] }
+sha2 = "0.10"
 # Drag Convert engine (all pure-Rust: image codecs, archives, PDF merge/write).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "bmp"] }
 zip = { version = "6", default-features = false, features = ["deflate"] }

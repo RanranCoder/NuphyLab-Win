@@ -13,6 +13,7 @@ import { readAppState } from "./api";
 import type { ConnectionDisplay } from "../../shared/connection-display.mjs";
 import { connectionCopy } from "./connection-copy-v7";
 import { UpdatePreferences } from "./UpdatePreferences";
+import { AppUpdatePreferences } from "./AppUpdate";
 import { availableFirmwareUpdate } from "../../shared/firmware-onboarding.mjs";
 import type { OutputColorProfile, OutputColorProfileStatus } from "../../shared/output-color-profile.mjs";
 import "./device-settings-v5.css";
@@ -156,6 +157,7 @@ function AboutPreferences({ state, command }: {state: AppState | null; command: 
   const diagnosticError=state?.device.error || state?.playback.lastError;
   return <div className="lab-about-preferences">
     <UpdatePreferences state={state} command={command}/>
+    <AppUpdatePreferences/>
     <div className="lab-setting-panel lab-about-links">{(["help","licenses","diagnostics"] as const).map(id => <button key={id} onClick={() => setOpen(id)}>{titles[id]}<ChevronRight size={16}/></button>)}</div>
     {open && <Modal title={titles[open]} width={open === "licenses" ? 640 : 560} initialFocus="title" className="settings-overlay-v6" onClose={() => setOpen(null)} footer={<>
       {open === "licenses" && licenseError && <Button onClick={()=>setLicenseAttempt(value=>value+1)}>{copy("重试","Retry")}</Button>}

@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn missing_file_detection_matches_retrieval() {
         let root = temp_root("pocket-store-h");
-        let mut store = PocketStore::open(&root).unwrap();
+        let store = PocketStore::open(&root).unwrap();
         let existing = root.parent().unwrap().join(format!("exists-{}.txt", uuid_v4()));
         std::fs::write(&existing, b"x").unwrap();
         let item = PocketItem {

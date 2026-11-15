@@ -10,8 +10,8 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, RECT};
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectExtendedLimitInformation,
+    JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
 };
 use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -31,6 +31,8 @@ pub fn wide(text: &str) -> Vec<u16> {
 /// Owns a job-object handle. Children assigned to this job are killed by the
 /// kernel when the handle closes (including when the shell process dies), so
 /// a crashed or force-killed shell can never leave node.exe orphaned.
+/// BREAKAWAY_OK lets the in-app updater launch the Inno Setup installer with
+/// CREATE_BREAKAWAY_FROM_JOB so it survives the shell's own exit.
 pub struct JobObject(HANDLE);
 
 impl JobObject {
@@ -40,7 +42,7 @@ impl JobObject {
             return Err(io::Error::last_os_error());
         }
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         let ok = unsafe {
             SetInformationJobObject(
                 handle,

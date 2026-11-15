@@ -1,0 +1,8 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>NuPhy Lab (Windows)</title>
+        <link>https://github.com/bohu8264/NuphyLab-Win</link>
+        <description>Windows update feed for the NuPhyLab in-app updater. Generated and maintained by scripts/prepare-appcast-win.mjs — newest item first, never edited by hand after signing.</description>
+    </channel>
+</rss>

@@ -500,7 +500,7 @@ mod tests {
     fn chord(mods: &[&str], ordinary: Option<u16>) -> RecordOutcome {
         let mut recorder = Recorder::new(RecordKind::Prefix);
         let mut terminal: Option<RecordOutcome> = None;
-        let mut step = |outcome: RecordOutcome, terminal: &mut Option<RecordOutcome>| {
+        let step = |outcome: RecordOutcome, terminal: &mut Option<RecordOutcome>| {
             if terminal.is_none() && !matches!(outcome, RecordOutcome::Pending) {
                 *terminal = Some(outcome);
             }

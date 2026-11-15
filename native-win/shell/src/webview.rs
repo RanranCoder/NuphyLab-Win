@@ -46,7 +46,7 @@ const BRIDGE_SHIM: &str = r#"
       window.ipc.postMessage(JSON.stringify({ bridge: name, id, value }));
     })
   });
-  const handlers = { audioControl: make('audioControl'), codexKeys: make('codexKeys'), typingSounds: make('typingSounds'), keyboardPocket: make('keyboardPocket'), dragConvert: make('dragConvert'), selectionLab: make('selectionLab') };
+  const handlers = { audioControl: make('audioControl'), codexKeys: make('codexKeys'), typingSounds: make('typingSounds'), keyboardPocket: make('keyboardPocket'), dragConvert: make('dragConvert'), selectionLab: make('selectionLab'), appUpdate: make('appUpdate') };
   window.webkit = { messageHandlers: handlers };
 })();
 "#;
@@ -264,6 +264,7 @@ pub fn build(
     pocket: crate::pocket::PocketHandle,
     dragconvert: crate::dragconvert::DragHandle,
     selection: crate::selection::SelectionHandle,
+    updater: crate::updater::UpdaterHandle,
 ) -> Result<WebView, wry::Error> {
     let navigation_log = log.clone();
     let ipc_hotkeys = hotkeys.clone();
@@ -274,6 +275,7 @@ pub fn build(
     let ipc_pocket = pocket;
     let ipc_drag = dragconvert;
     let ipc_selection = selection;
+    let ipc_updater = updater;
     let download_log = log.clone();
     WebViewBuilder::new()
         .with_url(url.to_string())
@@ -308,6 +310,13 @@ pub fn build(
                     // server through the same BridgeReply chain.
                     let op = payload.get("op").and_then(Value::as_str).unwrap_or("").to_string();
                     ipc_selection.send(crate::selection::Op::Ipc { id, op, values: payload });
+                }
+                "appUpdate" => {
+                    // In-app updater: status/check/install answered from the
+                    // updater worker; download progress arrives as pushed
+                    // `nuphylab:app-update` events, not through this promise.
+                    let op = payload.get("op").and_then(Value::as_str).unwrap_or("").to_string();
+                    ipc_updater.send(crate::updater::Op::Ipc { id, op, values: payload });
                 }
                 _ => {
                     let ok = match bridge {
