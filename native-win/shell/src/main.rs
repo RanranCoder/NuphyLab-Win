@@ -8,6 +8,7 @@ mod autostart;
 mod capture;
 mod hotkey;
 mod https;
+mod pocket;
 mod power;
 mod theme;
 mod traymenu;
@@ -48,6 +49,10 @@ pub enum UserEvent {
     FunctionKey { mac: u8, down: bool },
     QaProbe,
     QaAutoQuit,
+    /// Keyboard Pocket panel visibility flips (worker thread → UI thread).
+    PocketPanel { show: bool },
+    /// Pocket recording watchdog: forwarded to the pocket worker for matching.
+    PocketRecordTimeout { session: String },
 }
 
 #[derive(Default)]
@@ -224,6 +229,7 @@ fn begin_terminate(
     state: &Arc<Mutex<ShellState>>,
     hotkeys: &hotkey::SharedHotkeys,
     hotkey_engine: &mut hotkey::HotkeyEngine,
+    pocket_hook: &mut pocket::PocketHook,
     worker_slot: &WorkerSlot,
     worker_exited: &Arc<AtomicBool>,
     webview_slot: &Rc<RefCell<Option<WebView>>>,
@@ -245,6 +251,7 @@ fn begin_terminate(
     audio::stop_active();
     capture::stop_active();
     hotkey_engine.stop();
+    pocket_hook.stop();
     if let Some(webview) = webview_slot.borrow().as_ref() {
         let _ = webview.evaluate_script(
             "window.__AIR_EXITING__ = true; window.dispatchEvent(new Event('nuphylab:shutdown'));",
@@ -326,6 +333,12 @@ fn show_worker_exit_dialog(data_dir: &std::path::Path, log_path: &std::path::Pat
 fn main() {
     let root = resolve_root();
     let data_dir = resolve_data_dir();
+    // Keyboard Pocket storage QA: exercises the exact store paths in an
+    // isolated directory and exits (QA / field-support affordance).
+    if std::env::var("AIR_STUDIO_POCKET_QA").ok().as_deref() == Some("1") {
+        let code = pocket::run_storage_qa(&data_dir);
+        std::process::exit(code);
+    }
     // Diagnostics entry point (QA / field support): duplicate the primary
     // display for a few seconds, write the zone grid next to the logs and exit.
     // Verifies the exact code path the screen-ambient source uses.
@@ -412,6 +425,13 @@ fn main() {
     };
     let window = builder.build(&event_loop).expect("window");
 
+    // Keyboard Pocket: shared hook runtime + worker thread + native panel
+    // window (hidden until a prefix hold or the openPanel op shows it).
+    let pocket_shared = pocket::SharedPocket::new(std::sync::Mutex::new(pocket::PocketRuntime::new()));
+    let (pocket_handle, pocket_core) = pocket::spawn(&data_dir, log.clone(), proxy.clone(), pocket_shared.clone());
+    let mut pocket_hook = pocket::PocketHook::new(pocket_shared.clone());
+    let pocket_panel = pocket::panel::Panel::create(&event_loop);
+
     let mut tray = match tray_icon {
         Some(icon) => {
             let exe = autostart::current_exe_path().unwrap_or_default();
@@ -479,7 +499,8 @@ fn main() {
                 }
                 hotkey::start_slot_queue(&url, &state.lock().unwrap().token, log.clone());
                 hotkey_engine.start(proxy.clone());
-                match webview::build(&window, &url, hotkeys.clone(), state.clone(), proxy.clone(), log.clone(), webview_slot.clone()) {
+                pocket_hook.start(pocket_handle.sender());
+                match webview::build(&window, &url, hotkeys.clone(), state.clone(), proxy.clone(), log.clone(), webview_slot.clone(), pocket_handle.clone()) {
                     Ok(webview) => {
                         if devtools {
                             webview.open_devtools();
@@ -518,6 +539,19 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                 }
             }
             Event::UserEvent(UserEvent::LanguageChanged { english }) => tray.set_language(english),
+            Event::UserEvent(UserEvent::PocketPanel { show }) => {
+                if show {
+                    pocket_panel.show();
+                    if let Ok(guard) = pocket_core.lock() {
+                        pocket_panel.repaint(&guard);
+                    }
+                } else {
+                    pocket_panel.hide();
+                }
+            }
+            Event::UserEvent(UserEvent::PocketRecordTimeout { session }) => {
+                pocket_handle.send(pocket::Op::RecordTimeout { session });
+            }
             Event::UserEvent(UserEvent::BridgeReply { id, ok, payload, error }) => {
                 // The WebView only runs on the event-loop thread; the async
                 // /api/typing reply lands here from the worker thread.
@@ -573,7 +607,7 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                         }
                     }
                 }
-                TrayAction::Quit => begin_terminate(&state, &hotkeys, &mut hotkey_engine, &worker_slot, &worker_exited, &webview_slot, &log, &proxy),
+                TrayAction::Quit => begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy),
             },
             Event::UserEvent(UserEvent::WorkerExited { code }) => {
                 worker_exited.store(true, Ordering::SeqCst);
@@ -635,32 +669,46 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                 }
             }
             Event::UserEvent(UserEvent::QaAutoQuit) => {
-                begin_terminate(&state, &hotkeys, &mut hotkey_engine, &worker_slot, &worker_exited, &webview_slot, &log, &proxy);
+                begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy);
             }
-            Event::WindowEvent { event: WindowEvent::Focused(focused), .. } => {
+            Event::WindowEvent { window_id, event: WindowEvent::Focused(focused), .. } if window_id == window.id() => {
                 // applicationDidBecomeActive/ResignActive parity: the editor
                 // gate only suppresses hotkeys while our own window is active.
                 hotkeys.lock().unwrap().window_focused = focused;
             }
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+            Event::WindowEvent { window_id, event: WindowEvent::CloseRequested, .. } if window_id == window.id() => {
                 // Closing the window hides to tray; quitting runs the restore
                 // chain from the tray menu (applicationShouldTerminateAfterLastWindowClosed = false).
                 save_bounds(&window, last_normal.clone(), &data_dir);
                 window.set_visible(false);
             }
-            Event::WindowEvent { event: WindowEvent::Moved(position), .. } => {
+            Event::WindowEvent { window_id, event: WindowEvent::Moved(position), .. } if window_id == window.id() => {
                 if !window.is_maximized() {
                     let size = window.inner_size();
                     last_normal = Some(WindowBounds { x: position.x, y: position.y, width: size.width, height: size.height, maximized: false });
                     pending_save = true;
                 }
             }
-            Event::WindowEvent { event: WindowEvent::Resized(size), .. } => {
+            Event::WindowEvent { window_id, event: WindowEvent::Resized(size), .. } if window_id == window.id() => {
                 if !window.is_maximized() {
                     if let Ok(position) = window.inner_position() {
                         last_normal = Some(WindowBounds { x: position.x, y: position.y, width: size.width, height: size.height, maximized: false });
                         pending_save = true;
                     }
+                }
+            }
+            // Pocket panel interaction: clicks land on slots (the window never
+            // activates, so the foreground app keeps focus for paste targets).
+            Event::WindowEvent { window_id, event: WindowEvent::MouseInput { button: tao::event::MouseButton::Left, state: tao::event::ElementState::Pressed, .. }, .. }
+                if window_id == pocket_panel.window.id() =>
+            {
+                if let Some(position) = pocket_panel.cursor_cell() {
+                    pocket_handle.send(pocket::Op::PanelClick { position });
+                }
+            }
+            Event::RedrawRequested(window_id) if window_id == pocket_panel.window.id() => {
+                if let Ok(guard) = pocket_core.lock() {
+                    pocket_panel.repaint(&guard);
                 }
             }
             Event::LoopDestroyed => {

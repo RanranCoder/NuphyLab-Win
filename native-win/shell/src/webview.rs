@@ -46,7 +46,7 @@ const BRIDGE_SHIM: &str = r#"
       window.ipc.postMessage(JSON.stringify({ bridge: name, id, value }));
     })
   });
-  const handlers = { audioControl: make('audioControl'), codexKeys: make('codexKeys'), typingSounds: make('typingSounds') };
+  const handlers = { audioControl: make('audioControl'), codexKeys: make('codexKeys'), typingSounds: make('typingSounds'), keyboardPocket: make('keyboardPocket') };
   window.webkit = { messageHandlers: handlers };
 })();
 "#;
@@ -261,6 +261,7 @@ pub fn build(
     proxy: tao::event_loop::EventLoopProxy<crate::UserEvent>,
     log: Arc<WorkerLog>,
     reply_slot: Rc<RefCell<Option<WebView>>>,
+    pocket: crate::pocket::PocketHandle,
 ) -> Result<WebView, wry::Error> {
     let navigation_log = log.clone();
     let ipc_hotkeys = hotkeys.clone();
@@ -268,6 +269,7 @@ pub fn build(
     let ipc_proxy = proxy.clone();
     let ipc_log = log.clone();
     let ipc_slot = reply_slot.clone();
+    let ipc_pocket = pocket;
     let download_log = log.clone();
     WebViewBuilder::new()
         .with_url(url.to_string())
@@ -282,8 +284,14 @@ pub fn build(
             let payload = message.get("value").cloned().unwrap_or(Value::Null);
             match bridge {
                 // typingSounds replies asynchronously via UserEvent::BridgeReply
-                // after the /api/typing round trip completes.
+                // after the /api/typing round trip completes; keyboardPocket ops
+                // run on the pocket worker thread and answer the same way with
+                // the full PocketStatus payload.
                 "typingSounds" => handle_typing_sounds(&ipc_state, &ipc_proxy, &ipc_log, id, &payload),
+                "keyboardPocket" => {
+                    let op = payload.get("op").and_then(Value::as_str).unwrap_or("").to_string();
+                    ipc_pocket.send(crate::pocket::Op::Ipc { id, op, values: payload });
+                }
                 _ => {
                     let ok = match bridge {
                         "audioControl" => handle_audio_control(&payload),

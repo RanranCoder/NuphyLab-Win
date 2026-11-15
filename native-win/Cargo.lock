@@ -2689,6 +2689,7 @@ dependencies = [
  "keymap",
  "num-complex",
  "png",
+ "raw-window-handle",
  "rustfft",
  "serde",
  "serde_json",
