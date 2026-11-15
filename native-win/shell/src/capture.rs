@@ -19,8 +19,8 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
-    IDXGIAdapter1, IDXGIDevice, IDXGIOutput, IDXGIOutput1, IDXGIOutput5, IDXGIOutputDuplication, IDXGIResource,
-    DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
+    CreateDXGIFactory1, IDXGIAdapter1, IDXGIDevice, IDXGIFactory1, IDXGIOutput, IDXGIOutput1, IDXGIOutput5,
+    IDXGIOutputDuplication, IDXGIResource, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
 };
 use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
 use windows::Win32::System::Com::CoInitializeEx;
@@ -132,6 +132,8 @@ struct Pipeline {
     duplication: IDXGIOutputDuplication,
     width: usize,
     height: usize,
+    /// Desktop-coordinate origin of the duplicated output (for region math).
+    output_desktop: (i32, i32),
 }
 
 fn create_device() -> ComResult<(ID3D11Device, ID3D11DeviceContext)> {
@@ -184,47 +186,180 @@ fn create_pipeline() -> ComResult<Pipeline> {
             }
             index += 1;
         }
-        let output = output.ok_or(windows::core::Error::from(windows::core::HRESULT(-1)))?;
-        let desc = output.GetDesc()?;
-        let output1: IDXGIOutput1 = output.cast()?;
-        // Ask for BGRA8 explicitly (IDXGIOutput5, Win10 1703+). CopyResource
-        // requires identical formats, and an HDR / 10-bit desktop would
-        // otherwise hand us a surface the staging texture cannot receive — a
-        // silently black frame. Older outputs fall back to the native format.
-        let requested: windows::core::Result<IDXGIOutputDuplication> = output
-            .cast::<IDXGIOutput5>()
-            .and_then(|output5| output5.DuplicateOutput1(&device, 0, &[DXGI_FORMAT_B8G8R8A8_UNORM]));
-        let duplication: IDXGIOutputDuplication = match requested {
-            Ok(duplication) => duplication,
-            Err(_) => output1.DuplicateOutput(&device)?,
-        };
-
-        let width = (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left).max(1) as usize;
-        let height = (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top).max(1) as usize;
-        // The duplicated surface uses the mode's own dimensions; on a rotated
-        // (portrait) display those differ from the desktop rect. Sizing the
-        // staging texture from the surface keeps CopyResource valid there too
-        // (the zone grid then follows the surface orientation).
-        let surface = duplication.GetDesc();
-        let surface_width = if surface.ModeDesc.Width > 0 { surface.ModeDesc.Width as usize } else { width };
-        let surface_height = if surface.ModeDesc.Height > 0 { surface.ModeDesc.Height as usize } else { height };
-        let staging_desc = D3D11_TEXTURE2D_DESC {
-            Width: surface_width as u32,
-            Height: surface_height as u32,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-            Usage: D3D11_USAGE_STAGING,
-            BindFlags: 0,
-            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-            MiscFlags: 0,
-        };
-        let mut staging: Option<ID3D11Texture2D> = None;
-        device.CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
-        let staging = staging.ok_or(windows::core::Error::from(windows::core::HRESULT(-1)))?;
-        Ok(Pipeline { context, staging, duplication, width: surface_width, height: surface_height })
+        build_pipeline(device, context, output)
     }
+}
+
+/// One-shot region capture for Smart Selection: duplicates the output that
+/// contains the rect (falling back to the first output), grabs one frame and
+/// encodes the sub-rect as PNG. `rect` is (x0, y0, x1, y1) in virtual-desktop
+/// coordinates; it is clamped to the chosen output.
+pub fn capture_region_png(rect: (i32, i32, i32, i32)) -> Result<Vec<u8>, String> {
+    let (rect_x0, rect_y0, rect_x1, rect_y1) = rect;
+    if rect_x1 - rect_x0 < 1 || rect_y1 - rect_y0 < 1 {
+        return Err("选区太小".into());
+    }
+    unsafe {
+        let _ = CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+    }
+    let output = find_output_for(rect_x0, rect_y0)?;
+    let pipeline = match output {
+        Some(output) => unsafe {
+            let _ = CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+            let (device, context) = create_device().map_err(|e| e.to_string())?;
+            build_pipeline(device, context, Some(output)).map_err(|e| e.to_string())?
+        },
+        None => create_pipeline().map_err(|e| e.to_string())?,
+    };
+    unsafe {
+        let output_desc = pipeline.duplication.GetDesc();
+        let rotation = output_desc.Rotation.0;
+        if !(0..=1).contains(&rotation) {
+            return Err("暂不支持旋转显示器的框选捕获".into());
+        }
+        let desktop = pipeline.output_desktop;
+        // Clamp the request into the duplicated output's desktop coordinates.
+        let x0 = rect_x0.max(desktop.0);
+        let y0 = rect_y0.max(desktop.1);
+        let x1 = rect_x1.min(desktop.0 + pipeline.width as i32);
+        let y1 = rect_y1.min(desktop.1 + pipeline.height as i32);
+        if x1 - x0 < 1 || y1 - y0 < 1 {
+            return Err("选区与显示器不相交".into());
+        }
+        // Grab one fresh frame (a static desktop may need a few timeouts; the
+        // cursor usually keeps the duplication producing frames).
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        let mut captured: Option<(Vec<u8>, usize)> = None;
+        while Instant::now() < deadline {
+            let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
+            let mut resource: Option<IDXGIResource> = None;
+            match pipeline.duplication.AcquireNextFrame(150, &mut frame_info, &mut resource) {
+                Ok(()) => {
+                    if let Some(texture) = resource.and_then(|resource| resource.cast::<ID3D11Texture2D>().ok()) {
+                        pipeline.context.CopyResource(&pipeline.staging, &texture);
+                    }
+                    let _ = pipeline.duplication.ReleaseFrame();
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    if pipeline.context.Map(&pipeline.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).is_ok() {
+                        let length = mapped.RowPitch as usize * pipeline.height;
+                        let pixels = std::slice::from_raw_parts(mapped.pData as *const u8, length);
+                        captured = Some((pixels.to_vec(), mapped.RowPitch as usize));
+                        pipeline.context.Unmap(&pipeline.staging, 0);
+                    }
+                    break;
+                }
+                Err(error) => {
+                    if error.code() != DXGI_ERROR_WAIT_TIMEOUT {
+                        return Err(format!("屏幕帧获取失败：{error}"));
+                    }
+                }
+            }
+        }
+        let Some((pixels, row_pitch)) = captured else {
+            return Err("屏幕帧获取超时".into());
+        };
+        // Extract the sub-rect and convert BGRA → RGBA.
+        let width = (x1 - x0) as usize;
+        let height = (y1 - y0) as usize;
+        let mut rgba = Vec::with_capacity(width * height * 4);
+        for y in 0..height {
+            let row = (y0 as usize + y) * row_pitch;
+            for x in 0..width {
+                let offset = row + (x0 as usize + x) * 4;
+                if offset + 3 >= pixels.len() {
+                    return Err("屏幕数据越界".into());
+                }
+                // BGRA memory order.
+                rgba.push(pixels[offset + 2]);
+                rgba.push(pixels[offset + 1]);
+                rgba.push(pixels[offset]);
+                rgba.push(pixels[offset + 3]);
+            }
+        }
+        encode_png(&rgba, width as u32, height as u32)
+    }
+}
+
+/// Finds the adapter output whose desktop coordinates contain (x, y).
+fn find_output_for(x: i32, y: i32) -> Result<Option<IDXGIOutput>, String> {
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| e.to_string())?;
+        let mut fallback: Option<IDXGIOutput> = None;
+        let mut adapter_index = 0u32;
+        while let Ok(adapter) = factory.EnumAdapters1(adapter_index) {
+            let mut output_index = 0u32;
+            while let Ok(output) = adapter.EnumOutputs(output_index) {
+                if let Ok(desc) = output.GetDesc() {
+                    let desktop = desc.DesktopCoordinates;
+                    if x >= desktop.left && y >= desktop.top && x < desktop.right && y < desktop.bottom {
+                        return Ok(Some(output));
+                    }
+                    if fallback.is_none() {
+                        fallback = Some(output);
+                    }
+                }
+                output_index += 1;
+            }
+            adapter_index += 1;
+        }
+        Ok(fallback)
+    }
+}
+
+fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+        writer.write_image_data(rgba).map_err(|e| e.to_string())?;
+    }
+    Ok(encoded)
+}
+
+unsafe fn build_pipeline(device: ID3D11Device, context: ID3D11DeviceContext, output: Option<IDXGIOutput>) -> ComResult<Pipeline> {
+    let output = output.ok_or(windows::core::Error::from(windows::core::HRESULT(-1)))?;
+    let desc = output.GetDesc()?;
+    let desktop = (desc.DesktopCoordinates.left, desc.DesktopCoordinates.top);
+    let output1: IDXGIOutput1 = output.cast()?;
+    // Ask for BGRA8 explicitly (IDXGIOutput5, Win10 1703+). CopyResource
+    // requires identical formats, and an HDR / 10-bit desktop would
+    // otherwise hand us a surface the staging texture cannot receive — a
+    // silently black frame. Older outputs fall back to the native format.
+    let requested: windows::core::Result<IDXGIOutputDuplication> = output
+        .cast::<IDXGIOutput5>()
+        .and_then(|output5| output5.DuplicateOutput1(&device, 0, &[DXGI_FORMAT_B8G8R8A8_UNORM]));
+    let duplication: IDXGIOutputDuplication = match requested {
+        Ok(duplication) => duplication,
+        Err(_) => output1.DuplicateOutput(&device)?,
+    };
+
+    let width = (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left).max(1) as usize;
+    let height = (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top).max(1) as usize;
+    // The duplicated surface uses the mode's own dimensions; on a rotated
+    // (portrait) display those differ from the desktop rect. Sizing the
+    // staging texture from the surface keeps CopyResource valid there too
+    // (the zone grid then follows the surface orientation).
+    let surface = duplication.GetDesc();
+    let surface_width = if surface.ModeDesc.Width > 0 { surface.ModeDesc.Width as usize } else { width };
+    let surface_height = if surface.ModeDesc.Height > 0 { surface.ModeDesc.Height as usize } else { height };
+    let staging_desc = D3D11_TEXTURE2D_DESC {
+        Width: surface_width as u32,
+        Height: surface_height as u32,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+        MiscFlags: 0,
+    };
+    let mut staging: Option<ID3D11Texture2D> = None;
+    device.CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
+    let staging = staging.ok_or(windows::core::Error::from(windows::core::HRESULT(-1)))?;
+    Ok(Pipeline { context, staging, duplication, width: surface_width, height: surface_height, output_desktop: desktop })
 }
 
 fn capture_thread(session: String, base: String, token: String, log: Arc<WorkerLog>, generation: u64) {

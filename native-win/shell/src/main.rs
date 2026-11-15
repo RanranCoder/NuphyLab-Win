@@ -11,6 +11,7 @@ mod hotkey;
 mod https;
 mod pocket;
 mod power;
+mod selection;
 mod theme;
 mod traymenu;
 mod webview;
@@ -54,6 +55,14 @@ pub enum UserEvent {
     PocketPanel { show: bool },
     /// Pocket recording watchdog: forwarded to the pocket worker for matching.
     PocketRecordTimeout { session: String },
+    /// Smart Selection windows and streaming updates (worker thread → UI).
+    SelectionOverlay { show: bool },
+    SelectionShortcutReleased,
+    SelectionPanel { show: bool, x: i32, y: i32, generation: u64, action: String },
+    SelectionThumbnail { png: Vec<u8> },
+    SelectionDelta { generation: u64, text: String },
+    SelectionDone { generation: u64, ok: bool, text: String },
+    SelectionRecordTimeout { session: String },
 }
 
 #[derive(Default)]
@@ -232,6 +241,7 @@ fn begin_terminate(
     hotkey_engine: &mut hotkey::HotkeyEngine,
     pocket_hook: &mut pocket::PocketHook,
     drag_hook: &mut dragconvert::trigger::DragHook,
+    selection_hook: &mut selection::hook::SelectionHook,
     worker_slot: &WorkerSlot,
     worker_exited: &Arc<AtomicBool>,
     webview_slot: &Rc<RefCell<Option<WebView>>>,
@@ -255,6 +265,7 @@ fn begin_terminate(
     hotkey_engine.stop();
     pocket_hook.stop();
     drag_hook.stop();
+    selection_hook.stop();
     if let Some(webview) = webview_slot.borrow().as_ref() {
         let _ = webview.evaluate_script(
             "window.__AIR_EXITING__ = true; window.dispatchEvent(new Event('nuphylab:shutdown'));",
@@ -346,6 +357,13 @@ fn main() {
     // an isolated directory (QA / field-support affordance).
     if std::env::var("AIR_STUDIO_DRAG_QA").ok().as_deref() == Some("1") {
         let code = dragconvert::run_conversion_qa(&data_dir);
+        std::process::exit(code);
+    }
+    // Smart Selection QA: pure logic paths (rect normalization, shortcut
+    // conversion, tables, state machine, persistence) in an isolated
+    // directory — no screen, no server, no API key required.
+    if std::env::var("AIR_STUDIO_SELECTION_QA").ok().as_deref() == Some("1") {
+        let code = selection::run_selection_qa(&data_dir);
         std::process::exit(code);
     }
     // Diagnostics entry point (QA / field support): duplicate the primary
@@ -446,6 +464,14 @@ fn main() {
     let (drag_handle, drag_core, drag_runtime) = dragconvert::spawn(&data_dir, log.clone(), proxy.clone(), english);
     let mut drag_hook = dragconvert::trigger::DragHook::new(drag_runtime.clone());
 
+    // Smart Selection: shared hook runtime + worker thread + the overlay
+    // (fullscreen region selector) and answer panel windows.
+    let selection_shared = selection::hook::SharedSelection::new(std::sync::Mutex::new(selection::hook::SelectionRuntime::new()));
+    let selection_handle = selection::spawn(&data_dir, log.clone(), proxy.clone(), selection_shared.clone());
+    let mut selection_hook = selection::hook::SelectionHook::new(selection_shared.clone());
+    let mut selection_overlay = selection::overlay::Overlay::create(&event_loop);
+    let mut selection_panel = selection::panel::Panel::create(&event_loop, selection_handle.sender());
+
     let mut tray = match tray_icon {
         Some(icon) => {
             let exe = autostart::current_exe_path().unwrap_or_default();
@@ -515,7 +541,9 @@ fn main() {
                 hotkey_engine.start(proxy.clone());
                 pocket_hook.start(pocket_handle.sender());
                 drag_hook.start(&drag_core);
-                match webview::build(&window, &url, hotkeys.clone(), state.clone(), proxy.clone(), log.clone(), webview_slot.clone(), pocket_handle.clone(), drag_handle.clone()) {
+                selection_handle.send(selection::Op::ServerReady { base: url.clone(), token: state.lock().unwrap().token.clone() });
+                selection_hook.start(selection_handle.sender());
+                match webview::build(&window, &url, hotkeys.clone(), state.clone(), proxy.clone(), log.clone(), webview_slot.clone(), pocket_handle.clone(), drag_handle.clone(), selection_handle.clone()) {
                     Ok(webview) => {
                         if devtools {
                             webview.open_devtools();
@@ -569,6 +597,49 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
             }
             Event::UserEvent(UserEvent::PocketRecordTimeout { session }) => {
                 pocket_handle.send(pocket::Op::RecordTimeout { session });
+            }
+            Event::UserEvent(UserEvent::SelectionOverlay { show }) => {
+                if show {
+                    selection_overlay.show();
+                } else {
+                    selection_overlay.hide();
+                }
+            }
+            Event::UserEvent(UserEvent::SelectionShortcutReleased) => {
+                // Released before dragging: cancel quietly (keep the overlay
+                // when a drag is in progress).
+                if selection_overlay.cancel_if_undragged() {
+                    selection_handle.send(selection::Op::SelectionCancelled);
+                }
+            }
+            Event::UserEvent(UserEvent::SelectionPanel { show, x, y, generation, action }) => {
+                if show {
+                    if selection_panel.generation() != generation {
+                        selection_panel.begin_request(generation);
+                    }
+                    selection_panel.set_action(&action);
+                    if x >= 0 && y >= 0 {
+                        selection_panel.show_at(x, y);
+                    } else {
+                        // Keep the current position (action switch / follow-up).
+                        selection_panel.window.set_visible(true);
+                        selection_panel.window.request_redraw();
+                    }
+                } else {
+                    selection_panel.hide();
+                }
+            }
+            Event::UserEvent(UserEvent::SelectionThumbnail { png }) => {
+                selection_panel.set_thumbnail_png(&png);
+            }
+            Event::UserEvent(UserEvent::SelectionDelta { generation, text }) => {
+                selection_panel.append_delta(generation, &text);
+            }
+            Event::UserEvent(UserEvent::SelectionDone { generation, ok, text }) => {
+                selection_panel.finish(generation, ok, &text);
+            }
+            Event::UserEvent(UserEvent::SelectionRecordTimeout { session }) => {
+                selection_handle.send(selection::Op::RecordTimeout { session });
             }
             Event::UserEvent(UserEvent::BridgeReply { id, ok, payload, error }) => {
                 // The WebView only runs on the event-loop thread; the async
@@ -625,7 +696,7 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                         }
                     }
                 }
-                TrayAction::Quit => begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &mut drag_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy),
+                TrayAction::Quit => begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &mut drag_hook, &mut selection_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy),
             },
             Event::UserEvent(UserEvent::WorkerExited { code }) => {
                 worker_exited.store(true, Ordering::SeqCst);
@@ -687,7 +758,7 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                 }
             }
             Event::UserEvent(UserEvent::QaAutoQuit) => {
-                begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &mut drag_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy);
+                begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &mut drag_hook, &mut selection_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy);
             }
             Event::WindowEvent { window_id, event: WindowEvent::Focused(focused), .. } if window_id == window.id() => {
                 // applicationDidBecomeActive/ResignActive parity: the editor
@@ -728,6 +799,81 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                 if let Ok(guard) = pocket_core.lock() {
                     pocket_panel.repaint(&guard);
                 }
+            }
+            // Smart Selection overlay: press → start the rubber band, move →
+            // repaint, release → normalized region to the worker (which runs
+            // the DXGI capture and the request).
+            Event::WindowEvent { window_id, event: WindowEvent::MouseInput { button: tao::event::MouseButton::Left, state: tao::event::ElementState::Pressed, .. }, .. }
+                if window_id == selection_overlay.window.id() =>
+            {
+                let (x, y) = selection_overlay.client_cursor();
+                selection_overlay.on_mouse_down(x, y);
+            }
+            Event::WindowEvent { window_id, event: WindowEvent::MouseInput { button: tao::event::MouseButton::Left, state: tao::event::ElementState::Released, .. }, .. }
+                if window_id == selection_overlay.window.id() =>
+            {
+                if let Some(rect) = selection_overlay.on_mouse_up() {
+                    selection_handle.send(selection::Op::OverlayCaptured { rect });
+                }
+            }
+            Event::WindowEvent { window_id, event: WindowEvent::CursorMoved { .. }, .. }
+                if window_id == selection_overlay.window.id() =>
+            {
+                let (x, y) = selection_overlay.client_cursor();
+                selection_overlay.on_mouse_move(x, y);
+            }
+            Event::RedrawRequested(window_id) if window_id == selection_overlay.window.id() => {
+                selection_overlay.repaint();
+            }
+            Event::WindowEvent { window_id, event: WindowEvent::CloseRequested, .. }
+                if window_id == selection_overlay.window.id() || window_id == selection_panel.window.id() =>
+            {
+                if window_id == selection_overlay.window.id() {
+                    selection_overlay.hide();
+                    selection_handle.send(selection::Op::SelectionCancelled);
+                } else {
+                    selection_panel.hide();
+                }
+            }
+            // Smart Selection answer panel: button clicks, wheel action
+            // switching, Esc dismiss, drag-to-move (position persists).
+            Event::WindowEvent { window_id, event: WindowEvent::MouseInput { button: tao::event::MouseButton::Left, state: tao::event::ElementState::Pressed, .. }, .. }
+                if window_id == selection_panel.window.id() =>
+            {
+                let (x, y) = selection_panel.client_cursor();
+                let (copy, send, header) = selection_panel.click(x, y);
+                if copy {
+                    selection_handle.send(selection::Op::PanelCopy);
+                } else if send {
+                    let text = selection_panel.read_follow_up();
+                    if !text.is_empty() {
+                        selection_handle.send(selection::Op::PanelFollowUp { text });
+                        selection_panel.clear_follow_up();
+                        selection_panel.focus_edit();
+                    }
+                } else if header {
+                    let _ = selection_panel.window.drag_window();
+                }
+            }
+            Event::WindowEvent { window_id, event: WindowEvent::MouseWheel { .. }, .. }
+                if window_id == selection_panel.window.id() =>
+            {
+                selection_handle.send(selection::Op::PanelSwitch);
+            }
+            Event::WindowEvent { window_id, event: WindowEvent::KeyboardInput { event: key_event, is_synthetic: _, .. }, .. }
+                if window_id == selection_panel.window.id() =>
+            {
+                if key_event.state == tao::event::ElementState::Pressed && key_event.physical_key == tao::keyboard::KeyCode::Escape {
+                    selection_panel.hide();
+                }
+            }
+            Event::WindowEvent { window_id, event: WindowEvent::Moved(position), .. }
+                if window_id == selection_panel.window.id() && selection_panel.window.is_visible() =>
+            {
+                selection_handle.send(selection::Op::PanelPosition { x: position.x, y: position.y });
+            }
+            Event::RedrawRequested(window_id) if window_id == selection_panel.window.id() => {
+                selection_panel.repaint();
             }
             Event::LoopDestroyed => {
                 if pending_save {

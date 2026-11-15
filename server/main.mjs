@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { readFile, stat, mkdir, writeFile, rename } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { Store, validateColors, validateAnimation, validateSettings } from "./storage.mjs";
+import { SelectionAI } from "./selection-ai.mjs";
 import { Hardware,hasUnownedFunctionKeyHistory } from "./hardware.mjs";
 import {ConnectionRecovery} from './connection-recovery.mjs';
 import {AirConnectionWake} from './connection-wake.mjs';
@@ -54,6 +55,9 @@ const musicRoutes=new MusicRoutes(dataDir,path.resolve(dataDir)===path.resolve(d
 const port = Number(process.env.AIR_STUDIO_PORT || process.env.AIR_STUDIO_PREFERRED_PORT || 0),
   token = process.env.AIR_STUDIO_TOKEN ?? randomBytes(32).toString("hex");
 const store = await new Store(dataDir).load();
+// Smart Selection (智能框选) AI service: preferences + API keys live server-side
+// (keys never reach the WebView); /api/selection routes mounted below.
+const selectionAI = new SelectionAI(dataDir);
 const ambientLighting = new AmbientLighting();
 const ambientSettings = () => store.data.settings.ambientLighting ?? DEFAULT_AMBIENT_LIGHTING;
 const verifiedNativeGesture=Symbol('verifiedNativeGesture');
@@ -2062,6 +2066,32 @@ const server = http.createServer(async (req, res) => {
           typingCoordination.enabled = result?.preferences?.enabled === true;
           typingCoordination.reason = null;
         }
+        return json(res, 200, { ok: true, result });
+      }
+      if (req.method === "POST" && url.pathname === "/api/selection") {
+        // Smart Selection bridge: the shell forwards every
+        // window.webkit.messageHandlers.selectionLab.postMessage call here.
+        // save/models/test/deleteKey/status answer a JSON result; stream pipes
+        // normalized SSE deltas straight through.
+        let body = "";
+        for await (const chunk of req) {
+          body += chunk;
+          if (body.length > 16 * 1024 * 1024) {
+            json(res, 413, { ok: false, error: "请求过大" });
+            return;
+          }
+        }
+        let value;
+        try {
+          value = JSON.parse(body);
+        } catch {
+          throw new Error("数据不是有效的 JSON");
+        }
+        if (value?.op === "stream") {
+          await selectionAI.stream(value, res);
+          return;
+        }
+        const result = await selectionAI.handle(value?.op, value);
         return json(res, 200, { ok: true, result });
       }
       return json(res, 404, { ok: false, error: "接口不存在" });

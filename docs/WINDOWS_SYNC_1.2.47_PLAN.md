@@ -97,7 +97,7 @@ Mac 端 Claude/Codex 旧面板已重构为统一 Agent 面板（`ClaudeCode.tsx`
 | B4 Music/统一库 | 完成 | 0b145e2 | server 随 B3c（music-routes/library/import + MusicRoutes 挂载）；12 个 music 测试 + source-ui-vm helper 恢复；parity 测试 CRLF 规范化 |
 | B5 多键盘/编辑 | 完成 | 49c1c60 | key-adaptation/firmware 换 Mac 版；storage/engine/games canvasCount 化；main.mjs 移除过时 win32 adaptation gate；20 测试拷入；npm test 761/744/0/17 |
 | B6 Typing Sounds | 完成 | feb459a | HIDBridge typing.rs（钩子/rodio/DSP/catalog 校验/6 op）；壳 shim 扩展 payload reply + /api/typing 转发；server 端点 + pause 协调；641 音效资源；cargo test 26 过、self-test 6115、npm test 766/749/0/17 |
-| B7 框选/拖拽/口袋 | 进行中（B7b Pocket 完成） | b798ea7 | 壳 pocket 模块 ~4200 行：16/16 op、9 槽存储+undo、剪贴板四格式、SendInput 粘贴、独立 LL 钩子、ZIP（UTF-8 中文）、tao 浮窗；cargo test 71 过；降级 9 项（Fn/冲突/CF_HTML 等）。B7c Drag Convert 与 B7d Smart Selection 待做（方案见上一行） |
+| B7 框选/拖拽/口袋 | 进行中（B7b/B7c 完成） | b798ea7 + f2024c5 | Pocket ~4200 行 16/16 op；DragConvert ~3900 行（IDropTarget 环形菜单、13 动作可用、pdfium/ffmpeg 降级检测）；cargo test 98 过。**B7d Smart Selection 待做**：SelectionLab op={status,refresh,save,models,voice,permission,recordShortcut,disable,relaunch,test}；屏幕捕获复用壳 capture.rs DXGI、选区浮层、AI 客户端 server 层 TS 化（Mac AIKit 1300 行 HTTP 流式）、语音降级暂缓 |
 | B7 框选/拖拽/口袋 | 未开始 | — | 最大批次，原生套件 |
 | B8 更新器 | 未开始 | — | 含签名校验 |
 
