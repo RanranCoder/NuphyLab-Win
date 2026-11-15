@@ -97,7 +97,7 @@ Mac 端 Claude/Codex 旧面板已重构为统一 Agent 面板（`ClaudeCode.tsx`
 | B4 Music/统一库 | 完成 | 0b145e2 | server 随 B3c（music-routes/library/import + MusicRoutes 挂载）；12 个 music 测试 + source-ui-vm helper 恢复；parity 测试 CRLF 规范化 |
 | B5 多键盘/编辑 | 完成 | 49c1c60 | key-adaptation/firmware 换 Mac 版；storage/engine/games canvasCount 化；main.mjs 移除过时 win32 adaptation gate；20 测试拷入；npm test 761/744/0/17 |
 | B6 Typing Sounds | 完成 | feb459a | HIDBridge typing.rs（钩子/rodio/DSP/catalog 校验/6 op）；壳 shim 扩展 payload reply + /api/typing 转发；server 端点 + pause 协调；641 音效资源；cargo test 26 过、self-test 6115、npm test 766/749/0/17 |
-| B7 框选/拖拽/口袋 | 进行中（B7b Pocket 委托实现中） | — | 架构确认：三功能全在壳原生 + UI 桥（server 零参与）；bridge：selectionLab/dragConvert/keyboardPocket（对象 reply 链路 B6 已铺）。**B7b Pocket**：Mac 12 Swift 文件 ~3300 行 → 壳 pocket 模块（存储/undo/快捷钩子/剪贴板/SendInput 粘贴/ZIP/录制/简化浮窗）。**B7c Drag Convert**：触发键+拖拽菜单+本机转换；Win 转换引擎决策：图片用 image crate、压缩包 zip/tar crate、PDF 需 pdfium、音视频需 ffmpeg（第一版建议降级 PDF/音视频，见 DRAG_CONVERT.md 格式表）；DragConvertLab 仅 status op，执行在原生。**B7d Smart Selection**：SelectionLab op={status,refresh,save,models,voice,permission,recordShortcut,disable,relaunch,test}；屏幕捕获复用壳 capture.rs(DXGI)、选区浮层、AI 客户端建议在 server 层实现（Mac AIKit 1300 行 Swift 是 HTTP 流式，可 TS 化）；语音输入（Mac Speech framework）Win 可降级暂缓 |
+| B7 框选/拖拽/口袋 | 进行中（B7b Pocket 完成） | b798ea7 | 壳 pocket 模块 ~4200 行：16/16 op、9 槽存储+undo、剪贴板四格式、SendInput 粘贴、独立 LL 钩子、ZIP（UTF-8 中文）、tao 浮窗；cargo test 71 过；降级 9 项（Fn/冲突/CF_HTML 等）。B7c Drag Convert 与 B7d Smart Selection 待做（方案见上一行） |
 | B7 框选/拖拽/口袋 | 未开始 | — | 最大批次，原生套件 |
 | B8 更新器 | 未开始 | — | 含签名校验 |
 

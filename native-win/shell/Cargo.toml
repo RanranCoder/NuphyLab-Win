@@ -32,6 +32,18 @@ rustfft = "6"
 num-complex = "0.4"
 wasapi = "0.15"
 ureq = { version = "2", default-features = false }
+# Drag Convert engine (all pure-Rust: image codecs, archives, PDF merge/write).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "bmp"] }
+zip = { version = "6", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+lopdf = "0.37"
+pdf-writer = "0.13"
+lzma-rs = "0.3"
+bzip2-rs = "0.1"
+# Dynamic pdfium loading for PDF page rendering (no link-time dependency;
+# the DLL is detected at runtime and actions degrade without it).
+pdfium-render = "0.8"
 # COM wrappers for DXGI Desktop Duplication (windows-sys 0.59 dropped the
 # D3D/DXGI feature modules); everything else stays on windows-sys.
 windows = { version = "0.62", features = [
@@ -55,11 +67,13 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_JobObjects",
   "Win32_System_LibraryLoader",
   "Win32_System_Memory",
+  "Win32_System_Ole",
   "Win32_System_Registry",
   "Win32_System_Threading",
   "Win32_UI_Controls_Dialogs",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
+  "Win32_UI_Shell_Common",
   "Win32_UI_WindowsAndMessaging",
   "Win32_Graphics_Gdi",
 ] }

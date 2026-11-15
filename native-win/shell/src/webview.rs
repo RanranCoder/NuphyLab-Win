@@ -46,7 +46,7 @@ const BRIDGE_SHIM: &str = r#"
       window.ipc.postMessage(JSON.stringify({ bridge: name, id, value }));
     })
   });
-  const handlers = { audioControl: make('audioControl'), codexKeys: make('codexKeys'), typingSounds: make('typingSounds'), keyboardPocket: make('keyboardPocket') };
+  const handlers = { audioControl: make('audioControl'), codexKeys: make('codexKeys'), typingSounds: make('typingSounds'), keyboardPocket: make('keyboardPocket'), dragConvert: make('dragConvert') };
   window.webkit = { messageHandlers: handlers };
 })();
 "#;
@@ -262,6 +262,7 @@ pub fn build(
     log: Arc<WorkerLog>,
     reply_slot: Rc<RefCell<Option<WebView>>>,
     pocket: crate::pocket::PocketHandle,
+    dragconvert: crate::dragconvert::DragHandle,
 ) -> Result<WebView, wry::Error> {
     let navigation_log = log.clone();
     let ipc_hotkeys = hotkeys.clone();
@@ -270,6 +271,7 @@ pub fn build(
     let ipc_log = log.clone();
     let ipc_slot = reply_slot.clone();
     let ipc_pocket = pocket;
+    let ipc_drag = dragconvert;
     let download_log = log.clone();
     WebViewBuilder::new()
         .with_url(url.to_string())
@@ -291,6 +293,12 @@ pub fn build(
                 "keyboardPocket" => {
                     let op = payload.get("op").and_then(Value::as_str).unwrap_or("").to_string();
                     ipc_pocket.send(crate::pocket::Op::Ipc { id, op, values: payload });
+                }
+                "dragConvert" => {
+                    // Same reply chain as keyboardPocket: the worker answers
+                    // with the full Status object via UserEvent::BridgeReply.
+                    let op = payload.get("op").and_then(Value::as_str).unwrap_or("").to_string();
+                    ipc_drag.send(crate::dragconvert::Op::Ipc { id, op, values: payload });
                 }
                 _ => {
                     let ok = match bridge {

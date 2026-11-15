@@ -6,6 +6,7 @@
 mod audio;
 mod autostart;
 mod capture;
+mod dragconvert;
 mod hotkey;
 mod https;
 mod pocket;
@@ -230,6 +231,7 @@ fn begin_terminate(
     hotkeys: &hotkey::SharedHotkeys,
     hotkey_engine: &mut hotkey::HotkeyEngine,
     pocket_hook: &mut pocket::PocketHook,
+    drag_hook: &mut dragconvert::trigger::DragHook,
     worker_slot: &WorkerSlot,
     worker_exited: &Arc<AtomicBool>,
     webview_slot: &Rc<RefCell<Option<WebView>>>,
@@ -252,6 +254,7 @@ fn begin_terminate(
     capture::stop_active();
     hotkey_engine.stop();
     pocket_hook.stop();
+    drag_hook.stop();
     if let Some(webview) = webview_slot.borrow().as_ref() {
         let _ = webview.evaluate_script(
             "window.__AIR_EXITING__ = true; window.dispatchEvent(new Event('nuphylab:shutdown'));",
@@ -337,6 +340,12 @@ fn main() {
     // isolated directory and exits (QA / field-support affordance).
     if std::env::var("AIR_STUDIO_POCKET_QA").ok().as_deref() == Some("1") {
         let code = pocket::run_storage_qa(&data_dir);
+        std::process::exit(code);
+    }
+    // Drag Convert conversion QA: real image/zip/tar/mergePDF round trips in
+    // an isolated directory (QA / field-support affordance).
+    if std::env::var("AIR_STUDIO_DRAG_QA").ok().as_deref() == Some("1") {
+        let code = dragconvert::run_conversion_qa(&data_dir);
         std::process::exit(code);
     }
     // Diagnostics entry point (QA / field support): duplicate the primary
@@ -432,6 +441,11 @@ fn main() {
     let mut pocket_hook = pocket::PocketHook::new(pocket_shared.clone());
     let pocket_panel = pocket::panel::Panel::create(&event_loop);
 
+    // Drag Convert: wheel-menu window thread + worker + independent trigger
+    // hook (never swallows keystrokes; the menu only opens during file drags).
+    let (drag_handle, drag_core, drag_runtime) = dragconvert::spawn(&data_dir, log.clone(), proxy.clone(), english);
+    let mut drag_hook = dragconvert::trigger::DragHook::new(drag_runtime.clone());
+
     let mut tray = match tray_icon {
         Some(icon) => {
             let exe = autostart::current_exe_path().unwrap_or_default();
@@ -500,7 +514,8 @@ fn main() {
                 hotkey::start_slot_queue(&url, &state.lock().unwrap().token, log.clone());
                 hotkey_engine.start(proxy.clone());
                 pocket_hook.start(pocket_handle.sender());
-                match webview::build(&window, &url, hotkeys.clone(), state.clone(), proxy.clone(), log.clone(), webview_slot.clone(), pocket_handle.clone()) {
+                drag_hook.start(&drag_core);
+                match webview::build(&window, &url, hotkeys.clone(), state.clone(), proxy.clone(), log.clone(), webview_slot.clone(), pocket_handle.clone(), drag_handle.clone()) {
                     Ok(webview) => {
                         if devtools {
                             webview.open_devtools();
@@ -538,7 +553,10 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                     }
                 }
             }
-            Event::UserEvent(UserEvent::LanguageChanged { english }) => tray.set_language(english),
+            Event::UserEvent(UserEvent::LanguageChanged { english }) => {
+                tray.set_language(english);
+                dragconvert::set_english(english);
+            }
             Event::UserEvent(UserEvent::PocketPanel { show }) => {
                 if show {
                     pocket_panel.show();
@@ -607,7 +625,7 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                         }
                     }
                 }
-                TrayAction::Quit => begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy),
+                TrayAction::Quit => begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &mut drag_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy),
             },
             Event::UserEvent(UserEvent::WorkerExited { code }) => {
                 worker_exited.store(true, Ordering::SeqCst);
@@ -669,7 +687,7 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                 }
             }
             Event::UserEvent(UserEvent::QaAutoQuit) => {
-                begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy);
+                begin_terminate(&state, &hotkeys, &mut hotkey_engine, &mut pocket_hook, &mut drag_hook, &worker_slot, &worker_exited, &webview_slot, &log, &proxy);
             }
             Event::WindowEvent { window_id, event: WindowEvent::Focused(focused), .. } if window_id == window.id() => {
                 // applicationDidBecomeActive/ResignActive parity: the editor
