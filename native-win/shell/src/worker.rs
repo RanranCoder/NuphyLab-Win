@@ -131,6 +131,16 @@ pub fn spawn(
         .arg(root.join("server").join("main.mjs"))
         .current_dir(root)
         .env("AIR_STUDIO_HID", root.join("bin").join("HIDBridge.exe"))
+        // Typing Sounds sample packs (catalog.json + audio/). An empty value
+        // tells HIDBridge to skip the feature entirely (layout without assets).
+        .env(
+            "AIR_STUDIO_TYPING_ASSETS",
+            if root.join("assets").join("typing-sounds").is_dir() {
+                root.join("assets").join("typing-sounds").into_os_string()
+            } else {
+                std::ffi::OsString::from("")
+            },
+        )
         .env("AIR_STUDIO_UI", root.join("ui").join("dist"))
         .env("AIR_STUDIO_DATA", data_dir)
         .env("AIR_STUDIO_STDIN_EXIT", "1")

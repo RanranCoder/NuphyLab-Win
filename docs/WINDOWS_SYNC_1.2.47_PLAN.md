@@ -90,12 +90,13 @@ Mac 端 Claude/Codex 旧面板已重构为统一 Agent 面板（`ClaudeCode.tsx`
 
 | 批次 | 状态 | 提交 | 备注 |
 |---|---|---|---|
-| B1 基础同步 | 进行中（shared+server 层完成） | ebcc14d | 第二批：8 个 server 模块 + fake-service 合并（保留 Win 5 处平台适配）+ 21 个新测试过。**UI 同名文件改判**：不能单独同步（Mac 版 App.tsx 依赖 FeatureCenter/Settings/UnifiedLibrary 等未拷组件与 main.mjs 新端点，单独换会构建失败），归入各功能批次：B2（App/Settings/侧栏）、B3（Agent/Codex）、B4（Library/Studio/music）、B5（Device/Keyboard）、B8（UpdatePreferences） |
+| B1 基础同步 | 完成 | ebcc14d | shared 31 新模块 + 14 同名替换 + i18n 合并 + 8 server 模块 + fake-service（Win 5 处适配保留）|
+| B2 功能中心/设置 | 完成 | 686c8bb + 5cf19c6 | UI 全量对齐（107 新文件 + 92 覆盖）+ App/AudioPanel/Settings 合并 Win 特有（appearance/screen）+ sidebarFeatures 持久化与迁移 + watchNativeParent 接线；npm test 393/381/0/12、UI 构建过 |
 | B2 功能中心/设置 | 未开始 | — | |
-| B3 Agent/Codex | 未开始 | — | audio-reactive.test.mjs 中 1 个集成用例已 skip（依赖 Codex 任务状态灯新行为），B3 后恢复 |
-| B4 Music/统一库 | 未开始 | — | |
-| B5 多键盘/编辑 | 未开始 | — | layout/keyboard-models/kick75 json 等 shared 层已在 B1 就绪 |
-| B6 Typing Sounds | 未开始 | — | 需 HIDBridge 钩子 |
+| B3 Agent/Codex | 进行中（B3a 完成） | 0a3cfe4 | 4 个 codex 新模块 + codex-shortcuts（Win cmdorctrl→control 保留）+ codex.mjs 快捷键表演进（Win IS_WIN/路径清单保留）；claude 系列 Win 为超集零改动；npm test 406/394/0/12。B3c 待做：main.mjs 深度接线（codexAction 新流程/nativeKey 路由/CommandBridge/recovery/wake），恢复 audio-reactive skip 用例、codex-command-bridge-service.test、connection-* 测试 |
+| B4 Music/统一库 | 完成 | 0b145e2 | server 随 B3c（music-routes/library/import + MusicRoutes 挂载）；12 个 music 测试 + source-ui-vm helper 恢复；parity 测试 CRLF 规范化 |
+| B5 多键盘/编辑 | 完成 | 49c1c60 | key-adaptation/firmware 换 Mac 版；storage/engine/games canvasCount 化；main.mjs 移除过时 win32 adaptation gate；20 测试拷入；npm test 761/744/0/17 |
+| B6 Typing Sounds | 进行中 | — | 架构：UI(TypingSounds.tsx 已就位) → 壳 shim(typingSounds bridge + reply 带 payload) → server /api/typing → HIDBridge JSONL op（typingStatus/Save/Preview/StopPreview/Pause/Resume）。Rust 子代理实现：HIDBridge typing 模块（WH_KEYBOARD_LL 钩子过滤 injected/repeated、rodio 播放、Mac Swift 三文件语义移植、catalog 校验）+ 壳接线 + 资源拷贝。typing-cross.test 5/5 过（shared 层 B1 已兼容） |
 | B7 框选/拖拽/口袋 | 未开始 | — | 最大批次，原生套件 |
 | B8 更新器 | 未开始 | — | 含签名校验 |
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde = { version = "1", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
 keymap = { path = "../keymap" }
 windows-sys = { version = "0.59", features = [
@@ -14,3 +14,10 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# Typing sounds playback. Only WAV (designed packs) and MP3 (retro packs)
+# decoders are needed; symphonia provides the MP3 path.
+rodio = { version = "0.20", default-features = false, features = ["wav", "mp3"] }
+
+[dev-dependencies]
+# Same WAV writer crate rodio already pulls in; used to synthesize bank fixtures.
+hound = "3"

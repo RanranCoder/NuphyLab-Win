@@ -7,6 +7,7 @@ mod journal;
 mod ops;
 mod protocol;
 mod selftest;
+mod typing;
 mod winhid;
 
 use device::{emit, diagnostic, Air75Device};
@@ -102,6 +103,9 @@ fn execute_quiet(device: &mut Air75Device, command: &Value) -> Result<Value> {
 
 fn shutdown(mut device: Air75Device, _quitting: bool) {
     hooks::stop_all();
+    // Typing sounds owns its own hook thread and audio worker; neither may
+    // outlive the process's last response.
+    typing::shutdown();
     let lighting_restored = device.shutdown();
     // No global key hooks exist on Windows yet: key restoration is a no-op.
     emit(json!({

@@ -2,7 +2,7 @@
 // Ported from the WKWebView delegate methods in AppHost.swift.
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -19,24 +19,34 @@ use crate::worker::WorkerLog;
 /// returning a Promise) on top of wry's `window.ipc.postMessage`. The shell's
 /// WH_KEYBOARD_LL hook (M3) owns the keys globally; the page's own keyboard
 /// fallback stays disabled because these handlers exist.
+///
+/// Reply protocol: `__airReply(id, ok)` keeps the legacy boolean resolution for
+/// audioControl/codexKeys; `__airReply(id, ok, value)` resolves the Promise
+/// with the decoded JSON object and `__airReply(id, false, undefined, code)`
+/// rejects it, which is what the typingSounds UI expects from macOS
+/// (`reply(nil, "settings")` arrives as a rejected Promise with the code).
 const BRIDGE_SHIM: &str = r#"
 (() => {
   if (window.__airBridgeInstalled) return;
   window.__airBridgeInstalled = true;
   let seq = 0;
   const pending = new Map();
-  window.__airReply = (id, ok) => {
-    const resolve = pending.get(id);
-    if (resolve) { pending.delete(id); resolve(ok); }
+  window.__airReply = (id, ok, value, errorText) => {
+    const entry = pending.get(id);
+    if (!entry) return;
+    pending.delete(id);
+    if (value === undefined && errorText === undefined) { entry.resolve(ok); return; }
+    if (ok) entry.resolve(value === undefined ? null : value);
+    else entry.reject(new Error(errorText === undefined ? 'unavailable' : errorText));
   };
   const make = (name) => ({
-    postMessage: (value) => new Promise((resolve) => {
+    postMessage: (value) => new Promise((resolve, reject) => {
       const id = ++seq;
-      pending.set(id, resolve);
+      pending.set(id, { resolve, reject });
       window.ipc.postMessage(JSON.stringify({ bridge: name, id, value }));
     })
   });
-  const handlers = { audioControl: make('audioControl'), codexKeys: make('codexKeys') };
+  const handlers = { audioControl: make('audioControl'), codexKeys: make('codexKeys'), typingSounds: make('typingSounds') };
   window.webkit = { messageHandlers: handlers };
 })();
 "#;
@@ -150,15 +160,113 @@ fn reply(slot: &Rc<RefCell<Option<WebView>>>, id: i64, ok: bool) {
     }
 }
 
+/// Builds the `__airReply` script for the typingSounds bridge: a resolved
+/// Promise carrying the TypingStatus object, or a rejected Promise carrying the
+/// issue code (both embedded as JSON literals — a JSON object/string is a valid
+/// JS expression apart from U+2028/2029, which are escaped).
+pub fn bridge_reply_script(id: i64, ok: bool, payload: Option<&str>, error: Option<&str>) -> String {
+    let escape = |text: &str| text.replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
+    let value_part = payload.map(|json| format!(", {}", escape(json))).unwrap_or_default();
+    let error_part = error
+        .map(|code| format!(", undefined, {}", escape(&serde_json::to_string(code).unwrap_or_else(|_| "\"unavailable\"".into()))))
+        .unwrap_or_default();
+    if value_part.is_empty() && error_part.is_empty() {
+        format!("window.__airReply && window.__airReply({}, {})", id, if ok { "true" } else { "false" })
+    } else {
+        format!("window.__airReply && window.__airReply({}, {}{}{})", id, if ok { "true" } else { "false" }, value_part, error_part)
+    }
+}
+
+/// typingSounds IPC → POST /api/typing on the local server. The reply is
+/// marshalled back through the event loop (`UserEvent::BridgeReply`) because
+/// the HTTP call must not block the UI thread and the WebView only runs on it.
+pub fn handle_typing_sounds(
+    state: &Arc<Mutex<crate::ShellState>>,
+    proxy: &tao::event_loop::EventLoopProxy<crate::UserEvent>,
+    log: &Arc<WorkerLog>,
+    id: i64,
+    payload: &Value,
+) {
+    let target = {
+        let guard = state.lock().unwrap();
+        guard.base_url.clone().map(|base| (base, guard.token.clone()))
+    };
+    let Some((base, token)) = target else {
+        // Server not ready (or gone): fail the call like a transport error.
+        let _ = proxy.send_event(crate::UserEvent::BridgeReply { id, ok: false, payload: None, error: None });
+        return;
+    };
+    let proxy = proxy.clone();
+    let log = log.clone();
+    let body = payload.to_string();
+    std::thread::spawn(move || {
+        let outcome = post_typing(&base, &token, &body);
+        match outcome {
+            Ok(result) => {
+                let _ = proxy.send_event(crate::UserEvent::BridgeReply { id, ok: true, payload: Some(result), error: None });
+            }
+            Err(code) => {
+                log.append(format!("[typingSounds] /api/typing failed: {code}\n").as_bytes());
+                let _ = proxy.send_event(crate::UserEvent::BridgeReply { id, ok: false, payload: None, error: Some(code) });
+            }
+        }
+    });
+}
+
+/// One blocking /api/typing round trip. Returns the server's `result` JSON on
+/// success or the Mac-style issue code ("settings"/"audio"/…) on failure.
+fn post_typing(base: &str, token: &str, body: &str) -> Result<String, String> {
+    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(10)).build();
+    let request = agent.post(&format!("{}/api/typing", base));
+    let request = if token.is_empty() { request } else { request.set("X-Air-Token", token) };
+    let response = request
+        .set("Content-Type", "application/json")
+        .send_string(body)
+        .map_err(|error| match error {
+            ureq::Error::Status(_status, response) => response.into_string().unwrap_or_default(),
+            other => other.to_string(),
+        })?;
+    let text = response.into_string().map_err(|error| error.to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|_| "unavailable".to_string())?;
+    if value.get("ok").and_then(Value::as_bool) == Some(true) {
+        Ok(value
+            .get("result")
+            .map(|result| result.to_string())
+            .unwrap_or_else(|| "null".to_string()))
+    } else {
+        // Map the JSONL error codes onto the UI's issue labels (AppHost parity).
+        let code = value.get("code").and_then(Value::as_str).unwrap_or_default();
+        let mapped = match code {
+            "INVALID_SETTINGS" | "INVALID_CATALOG" => "settings",
+            "AUDIO" => "audio",
+            "UNAVAILABLE" => "unavailable",
+            "UNKNOWN_OPERATION" => "unsupported",
+            "" => "",
+            _ => code,
+        };
+        let code = if mapped.is_empty() {
+            value.get("error").and_then(Value::as_str).unwrap_or("unavailable")
+        } else {
+            mapped
+        };
+        Err(code.to_string())
+    }
+}
+
 pub fn build(
     window: &Window,
     url: &str,
     hotkeys: SharedHotkeys,
+    state: Arc<Mutex<crate::ShellState>>,
+    proxy: tao::event_loop::EventLoopProxy<crate::UserEvent>,
     log: Arc<WorkerLog>,
     reply_slot: Rc<RefCell<Option<WebView>>>,
 ) -> Result<WebView, wry::Error> {
     let navigation_log = log.clone();
     let ipc_hotkeys = hotkeys.clone();
+    let ipc_state = state.clone();
+    let ipc_proxy = proxy.clone();
+    let ipc_log = log.clone();
     let ipc_slot = reply_slot.clone();
     let download_log = log.clone();
     WebViewBuilder::new()
@@ -172,12 +280,19 @@ pub fn build(
             let Some(id) = message.get("id").and_then(Value::as_i64) else { return };
             let bridge = message.get("bridge").and_then(Value::as_str).unwrap_or("");
             let payload = message.get("value").cloned().unwrap_or(Value::Null);
-            let ok = match bridge {
-                "audioControl" => handle_audio_control(&payload),
-                "codexKeys" => handle_codex_keys(&ipc_hotkeys, &payload),
-                _ => false,
-            };
-            reply(&ipc_slot, id, ok);
+            match bridge {
+                // typingSounds replies asynchronously via UserEvent::BridgeReply
+                // after the /api/typing round trip completes.
+                "typingSounds" => handle_typing_sounds(&ipc_state, &ipc_proxy, &ipc_log, id, &payload),
+                _ => {
+                    let ok = match bridge {
+                        "audioControl" => handle_audio_control(&payload),
+                        "codexKeys" => handle_codex_keys(&ipc_hotkeys, &payload),
+                        _ => false,
+                    };
+                    reply(&ipc_slot, id, ok);
+                }
+            }
         })
         .with_download_started_handler(move |url, path| {
             let suggested = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

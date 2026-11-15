@@ -25,6 +25,7 @@ export const LAYOUT_SPEC = [
   { kind: "dir", path: "server" },
   { kind: "dir", path: "shared" },
   { kind: "dir", path: "hooks" },
+  { kind: "dir", path: "assets/typing-sounds" },
   { kind: "dir", path: "ui/dist" },
 ];
 /** Returns the missing/incomplete entries of a packaged layout. */
@@ -123,7 +124,9 @@ export async function packageWindows({
       throw new Error(`打包缺少 ${from}（${error.code ?? error.message}）。请先完成对应构建步骤。`);
     }
   }
-  for (const name of ["server", "shared", "hooks", path.join("ui", "dist")])
+  // assets/typing-sounds feeds the HIDBridge typing-sounds engine via the
+  // shell's AIR_STUDIO_TYPING_ASSETS; it must exist in the repo first.
+  for (const name of ["server", "shared", "hooks", path.join("ui", "dist"), path.join("assets", "typing-sounds")])
     await cp(path.join(root, name), path.join(layout, name), { recursive: true });
 
   // Signing is the distribution gate: refuse to emit a public artifact with

@@ -87,6 +87,14 @@ pub fn execute(device: &mut Air75Device, command: &Value) -> Result<Value> {
         "keyMonitor" => crate::hooks::configure_key_monitor(command),
         "triggerMonitor" => crate::hooks::configure_trigger_monitor(command),
         "shortcut" => crate::hooks::shortcut(command),
+        // Typing Sounds (模拟声浪): the server forwards the shell's typingSounds
+        // bridge here; persistence stays on the server side.
+        "typingStatus" => crate::typing::status(),
+        "typingSave" => crate::typing::save(command.get("patch")),
+        "typingPreview" => crate::typing::preview(command.get("pack"), command.get("group")),
+        "typingStopPreview" => crate::typing::stop_preview(),
+        "typingPause" => crate::typing::set_paused(command.get("reason"), true),
+        "typingResume" => crate::typing::set_paused(command.get("reason"), false),
         other => Err(failure("UNKNOWN_OPERATION", format!("Unknown operation: {other}"))),
     }
 }

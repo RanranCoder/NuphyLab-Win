@@ -46,7 +46,65 @@ pub fn run() -> Result<usize> {
     test_firmware_upgrade_lifecycle(&check)?;
     test_side_sync(&check)?;
     test_input_hooks(&check)?;
+    test_typing(&check)?;
     Ok(check.count.get())
+}
+
+// Pure branches of typing.rs plus (when the assets are provided) a real
+// catalog load and sample existence sweep. No hooks or audio devices run here.
+fn test_typing(check: &Check) -> Result<()> {
+    use crate::typing::{key_group, load_catalog, PressState, Preferences, KeyGroup};
+    // Key groups mirror TypingKeyGroup.key.
+    check.ok(key_group(0x20) == Some(KeyGroup::Space), "space maps to the space group")?;
+    check.ok(key_group(0x0D) == Some(KeyGroup::Enter) && key_group(0x6C) == Some(KeyGroup::Enter), "Return and keypad enter sound")?;
+    check.ok(key_group(0xA0) == Some(KeyGroup::ShiftLeft) && key_group(0xA1) == Some(KeyGroup::ShiftRight), "both physical shifts sound")?;
+    check.ok(key_group(0x14) == Some(KeyGroup::Caps) && key_group(0x41) == Some(KeyGroup::Regular), "caps lock and letters sound")?;
+    check.ok(
+        [0x11u16, 0x12, 0x5B, 0x5C, 0x70, 0x1B, 0x2E].iter().all(|vk| key_group(*vk).is_none()),
+        "Ctrl/Alt/Win, F keys, Escape and forward delete stay silent",
+    )?;
+    // Press dedup and repeat filtering.
+    let mut presses = PressState::default();
+    check.ok(presses.down(0x41, false) == Some(KeyGroup::Regular), "first press sounds")?;
+    check.ok(presses.down(0x41, false).is_none() && presses.down(0x41, true).is_none(), "held and repeated downs stay silent")?;
+    check.ok(presses.up(0x41) == Some(KeyGroup::Regular) && presses.up(0x41).is_none(), "release sounds once")?;
+    // Patch validation boundaries.
+    let prefs = Preferences::default();
+    let ids: std::collections::HashSet<&str> = ["mahjong-crisp", "wood-bamboo"].into_iter().collect();
+    check.ok(prefs.apply_patch(&json!({"volume": 100, "release": 0}), &ids).is_ok(), "volume/release accept 0..100")?;
+    check.ok(prefs.apply_patch(&json!({"volume": 100.5}), &ids).is_err(), "volume above 100 rejected")?;
+    check.ok(prefs.apply_patch(&json!({"enabled": 1}), &ids).is_err(), "non-boolean flags rejected")?;
+    check.ok(prefs.apply_patch(&json!({"gains": {"caps": 150}}), &ids).is_ok(), "gains accept 150")?;
+    check.ok(prefs.apply_patch(&json!({"gains": {"caps": 151}}), &ids).is_err(), "gains above 150 rejected")?;
+    check.ok(prefs.apply_patch(&json!({"gains": {"regular": 100}}), &ids).is_err(), "regular has no gain entry")?;
+    check.ok(prefs.apply_patch(&json!({"pack": "wood-bamboo"}), &ids).is_ok(), "known pack accepted")?;
+    check.ok(prefs.apply_patch(&json!({"pack": "buckling"}), &ids).is_err(), "unknown pack rejected")?;
+    check.ok(prefs.apply_patch(&json!({"favorites": ["mahjong-crisp", "mahjong-crisp"]}), &ids).is_err(), "duplicate favorites rejected")?;
+    check.ok((prefs.master_gain() - (0.5f64.powf(1.7) * 0.65)).abs() < 1e-9, "master gain formula matches Swift")?;
+    check.ok((prefs.gain(KeyGroup::Regular, true) - 0.7).abs() < 1e-9, "release gain formula matches Swift")?;
+    // Real catalog when the assets are available; skipped otherwise so the
+    // self-test also passes in bare build environments.
+    let assets = std::env::var_os("AIR_STUDIO_TYPING_ASSETS")
+        .map(std::path::PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty() && path.is_dir());
+    if let Some(root) = assets {
+        let (catalog, public) = load_catalog(&root)?;
+        check.ok(catalog.packs.len() == 18, "typing catalog carries 18 packs")?;
+        check.ok(public.get("assets").is_none(), "the asset list stays out of the status snapshot")?;
+        let mut samples = 0usize;
+        for pack in &catalog.packs {
+            for group in crate::typing::KEY_GROUPS {
+                for release in [false, true] {
+                    for path in pack.paths(group, release) {
+                        samples += 1;
+                        check.ok(root.join("audio").join(&pack.id).join(&path).is_file(), "catalog sample exists on disk")?;
+                    }
+                }
+            }
+        }
+        check.ok(samples > 18 * 8, "every pack resolves non-empty sample paths")?;
+    }
+    Ok(())
 }
 
 // Pure-validation branches of hooks.rs, porting the KeyHooks/TriggerHooks

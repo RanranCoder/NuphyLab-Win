@@ -37,6 +37,9 @@ use worker::{WorkerLog, WorkerSlot};
 pub enum UserEvent {
     Ready { url: String },
     WorkerExited { code: Option<i32> },
+    /// typingSounds bridge reply after the /api/typing round trip on the
+    /// worker thread; payload/error are pre-serialized JSON fragments.
+    BridgeReply { id: i64, ok: bool, payload: Option<String>, error: Option<String> },
     LanguageChanged { english: bool },
     PowerChanged { sleeping: bool },
     OsThemeChanged { dark: bool, accent: String },
@@ -476,7 +479,7 @@ fn main() {
                 }
                 hotkey::start_slot_queue(&url, &state.lock().unwrap().token, log.clone());
                 hotkey_engine.start(proxy.clone());
-                match webview::build(&window, &url, hotkeys.clone(), log.clone(), webview_slot.clone()) {
+                match webview::build(&window, &url, hotkeys.clone(), state.clone(), proxy.clone(), log.clone(), webview_slot.clone()) {
                     Ok(webview) => {
                         if devtools {
                             webview.open_devtools();
@@ -515,6 +518,14 @@ Windows 11 ships it). Open the official download page? After installing, run NuP
                 }
             }
             Event::UserEvent(UserEvent::LanguageChanged { english }) => tray.set_language(english),
+            Event::UserEvent(UserEvent::BridgeReply { id, ok, payload, error }) => {
+                // The WebView only runs on the event-loop thread; the async
+                // /api/typing reply lands here from the worker thread.
+                if let Some(webview) = webview_slot.borrow().as_ref() {
+                    let script = webview::bridge_reply_script(id, ok, payload.as_deref(), error.as_deref());
+                    let _ = webview.evaluate_script(&script);
+                }
+            }
             Event::UserEvent(UserEvent::PowerChanged { sleeping }) => {
                 // AppHost.willSleep parity: stop capture before the machine
                 // suspends; after resume the /api/state poll restarts it.

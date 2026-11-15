@@ -428,6 +428,33 @@ function state() {
     firmware: firmware.snapshot(hardware.state),
   };
 }
+// Typing Sounds (模拟声浪) pause coordination. On macOS AppHost.swift called
+// typingSounds.setPaused(...) itself for dictation holds and microphone
+// capture; on Windows both states live in this server, so the coordinator
+// forwards typingPause/typingResume to HIDBridge when the computed reason
+// changes. It stays dormant until the UI has talked to /api/typing once and
+// the feature is enabled, so the fake helper (and any op-less environment)
+// never sees a typing request.
+const typingCoordination = { known: false, enabled: false, reason: null };
+function typingPauseDesired() {
+  if (codexGestures.held?.action === 'dictation') return 'dictation';
+  const capture = audio.snapshot(store.data.settings.audio).capture;
+  if (capture.enabled && capture.source === 'microphone') return 'recording';
+  return null;
+}
+setInterval(() => {
+  if (!typingCoordination.known || !typingCoordination.enabled || stopping || !hardware.child) return;
+  const desired = typingPauseDesired();
+  if (desired === typingCoordination.reason) return;
+  const previous = typingCoordination.reason;
+  typingCoordination.reason = desired;
+  const request = desired ? hardware.request('typingPause', { reason: desired }) : hardware.request('typingResume');
+  request.catch(() => {
+    // A dead/unknown helper re-arms only on the next /api/typing call.
+    typingCoordination.known = false;
+    typingCoordination.reason = previous;
+  });
+}, 1000).unref();
 async function output(input) {
   const wakeFrame = connectionWake.frame(hardware.state, hardware.transportEpoch);
   // Settings may redraw a static/paused work immediately after cancelling the
@@ -2004,9 +2031,44 @@ const server = http.createServer(async (req, res) => {
         const result = await serialized(() => command(captured));
         return json(res, 200, { ok: true, result });
       }
+      if (req.method === "POST" && url.pathname === "/api/typing") {
+        // Typing Sounds bridge: the shell forwards every
+        // window.webkit.messageHandlers.typingSounds.postMessage call here and
+        // returns `result` (the TypingStatus object) to the page.
+        let body = "";
+        for await (const chunk of req) {
+          body += chunk;
+          if (body.length > 1024 * 1024) {
+            json(res, 413, { ok: false, error: "请求过大" });
+            return;
+          }
+        }
+        let value;
+        try {
+          value = JSON.parse(body);
+        } catch {
+          throw new Error("数据不是有效的 JSON");
+        }
+        const typingOps = { status: "typingStatus", save: "typingSave", preview: "typingPreview", stopPreview: "typingStopPreview" };
+        const typingOp = typingOps[value?.op];
+        if (!typingOp) throw new Error("未知的模拟声浪操作");
+        const args = typingOp === "typingSave" ? { patch: value.patch }
+          : typingOp === "typingPreview" ? { pack: value.pack, ...(value.group !== undefined ? { group: value.group } : {}) }
+          : {};
+        const result = await hardware.request(typingOp, args);
+        // Arm the pause coordinator with the freshest preferences.
+        if (typingOp === "typingStatus" || typingOp === "typingSave") {
+          typingCoordination.known = true;
+          typingCoordination.enabled = result?.preferences?.enabled === true;
+          typingCoordination.reason = null;
+        }
+        return json(res, 200, { ok: true, result });
+      }
       return json(res, 404, { ok: false, error: "接口不存在" });
     } catch (e) {
-      return json(res, 400, { ok: false, error: e.message });
+      // The shell maps e.code onto the UI's issue labels (settings/audio/…);
+      // /api/command callers only read the message.
+      return json(res, 400, { ok: false, error: e.message, ...(e.code !== undefined ? { code: e.code } : {}) });
     }
   }
   if (req.method !== "GET") {
